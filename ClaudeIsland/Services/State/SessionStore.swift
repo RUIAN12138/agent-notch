@@ -2139,7 +2139,7 @@ actor SessionStore {
         guard !Task.isCancelled else { return }
         lastCodexDiscoverySweepAt = discoveryStartedAt.addingTimeInterval(-2)
         for observation in discoveredCodexTasks {
-            if reconcileCodexLifecycle(
+            if await reconcileCodexLifecycle(
                 observation,
                 origin: .codexDiscovery,
                 now: now,
@@ -2189,7 +2189,7 @@ actor SessionStore {
                         lifecycle: lifecycle,
                         fileModifiedAt: now
                     )
-                    if reconcileCodexLifecycle(
+                    if await reconcileCodexLifecycle(
                         observation,
                         origin: .codexPolling,
                         now: now,
@@ -2215,6 +2215,12 @@ actor SessionStore {
                     cancelPendingSync(sessionId: sessionId)
                     stateChanged = true
                 }
+                continue
+            }
+
+            // Keep the terminal card briefly for context, but continue native
+            // Codex polling above so a genuinely new task can resume it.
+            if session.phase == .interrupted {
                 continue
             }
 
@@ -2260,7 +2266,7 @@ actor SessionStore {
         origin: LifecycleObservationOrigin,
         now: Date,
         allowCreation: Bool
-    ) -> Bool {
+    ) async -> Bool {
         let sessionId = observation.sessionId
         let previous = sessions[sessionId].map(SessionLifecycleSnapshot.init)
         let lifecycleObservation = SessionLifecycleObservation(
@@ -2326,12 +2332,26 @@ actor SessionStore {
                 return false
             }
             let previousCompletion = session.completedAt
+            let wasInterrupted = session.phase == .interrupted
             snapshot.applying(to: &session)
             if session.phase == .waitingForInput,
                previousCompletion != session.completedAt {
                 finalizeDanglingTools(in: &session, terminalAt: snapshot.completedAt ?? now)
             }
+            let didInterrupt = session.phase == .interrupted && !wasInterrupted
+            if didInterrupt {
+                finalizeDanglingTools(
+                    in: &session,
+                    terminalAt: session.lastHookEventAt ?? now
+                )
+            }
             sessions[sessionId] = session
+            if didInterrupt {
+                await cleanupExternalLifecycle(
+                    sessionId: sessionId,
+                    completedAt: session.lastHookEventAt ?? now
+                )
+            }
 
         case .remove:
             sessions.removeValue(forKey: sessionId)
@@ -2409,6 +2429,7 @@ actor SessionStore {
     ) -> Bool {
         switch (lhs, rhs) {
         case (.active, .active), (.completed, .completed),
+             (.interrupted, .interrupted),
              (.missing, .missing), (.unknown, .unknown),
              (.interrupt, .interrupt), (.processExited, .processExited):
             return true
@@ -2438,14 +2459,17 @@ actor SessionStore {
     }
 
     private func pruneCompletedSessions(now: Date = Date()) {
-        // Keep recent completed sessions in the backing store so an open chat
+        // Keep recent terminal sessions in the backing store so an open chat
         // cannot disappear merely because another task finished. The monitor
         // applies `maximumVisibleCompleted` to the notch list; storage cleanup
         // is time-based only.
         let sessionsToRemove: [SessionState] = sessions.values.compactMap {
             session -> SessionState? in
-            guard let completedAt = session.completedAt else { return nil }
-            let expired = now.timeIntervalSince(completedAt) >=
+            let terminalAt = session.phase == .interrupted
+                ? session.lastActivity
+                : session.completedAt
+            guard let terminalAt else { return nil }
+            let expired = now.timeIntervalSince(terminalAt) >=
                 SessionRetentionPolicy.completedLifetime
             return expired ? session : nil
         }
@@ -2490,6 +2514,9 @@ actor SessionStore {
             } else {
                 isRecentCompletion = false
             }
+            let isRecentInterruption = session.phase == .interrupted &&
+                now.timeIntervalSince(session.lastActivity) <
+                    SessionRetentionPolicy.completedLifetime
             let livePid = session.pid.flatMap {
                 isProcessRunning(pid: $0) ? $0 : nil
             }
@@ -2497,7 +2524,7 @@ actor SessionStore {
                 session.phase.isActive &&
                 now.timeIntervalSince(session.lastActivity) <
                     codexActiveStaleInterval
-            guard isRecentCompletion ||
+            guard isRecentCompletion || isRecentInterruption ||
                     livePid != nil ||
                     hasRecentNativeCodexActivity else {
                 return nil
@@ -2575,18 +2602,26 @@ actor SessionStore {
         var restoredActiveSessions: [(sessionId: String, cwd: String)] = []
 
         let now = Date()
-        let retainedCompletionIds = Set(
+        let retainedTerminalIds = Set(
             persisted
                 .filter { item in
-                    guard let completedAt = item.completedAt else {
+                    let terminalAt = item.phase == "interrupted"
+                        ? item.lastActivity
+                        : item.completedAt
+                    guard let terminalAt else {
                         return false
                     }
-                    return now.timeIntervalSince(completedAt) <
+                    return now.timeIntervalSince(terminalAt) <
                         SessionRetentionPolicy.completedLifetime
                 }
                 .sorted {
-                    ($0.completedAt ?? .distantPast) >
-                        ($1.completedAt ?? .distantPast)
+                    let lhs = ($0.phase == "interrupted"
+                        ? $0.lastActivity
+                        : $0.completedAt) ?? .distantPast
+                    let rhs = ($1.phase == "interrupted"
+                        ? $1.lastActivity
+                        : $1.completedAt) ?? .distantPast
+                    return lhs > rhs
                 }
                 .prefix(SessionRetentionPolicy.maximumVisibleCompleted)
                 .map(\.sessionId)
@@ -2611,9 +2646,12 @@ actor SessionStore {
             } else {
                 isRecentCompletion = false
             }
+            let isRecentInterruption = item.phase == "interrupted" &&
+                now.timeIntervalSince(item.lastActivity) <
+                    SessionRetentionPolicy.completedLifetime
             guard livePid != nil ||
-                    (isRecentCompletion &&
-                        retainedCompletionIds.contains(item.sessionId)) else {
+                    ((isRecentCompletion || isRecentInterruption) &&
+                        retainedTerminalIds.contains(item.sessionId)) else {
                 continue
             }
 
@@ -2634,8 +2672,19 @@ actor SessionStore {
             let lifecycleCompletion: Date?
             if case .completed(let completedAt) = codexLifecycle {
                 lifecycleCompletion = completedAt ?? now
+            } else if case .interrupted = codexLifecycle {
+                lifecycleCompletion = nil
             } else {
                 lifecycleCompletion = item.completedAt
+            }
+            let lifecycleInterrupted: Bool
+            switch codexLifecycle {
+            case .interrupted:
+                lifecycleInterrupted = true
+            case .active, .activeTool, .completed:
+                lifecycleInterrupted = false
+            case .missing, .unknown:
+                lifecycleInterrupted = item.phase == "interrupted"
             }
             let restoredPhase: SessionPhase
             let lifecycleStartsNewerTurn: Bool
@@ -2654,13 +2703,15 @@ actor SessionStore {
                 lifecycleStartsNewerTurn = item.lastHookEventAt.map {
                     toolStartedAt > $0
                 } ?? true
-            case .completed, .missing, .unknown:
+            case .completed, .interrupted, .missing, .unknown:
                 activeTurnStartedAt = nil
                 activeToolStartedAt = nil
                 lifecycleStartsNewerTurn = false
             }
             if lifecycleStartsNewerTurn {
                 restoredPhase = .processing
+            } else if lifecycleInterrupted {
+                restoredPhase = .interrupted
             } else if lifecycleCompletion != nil {
                 restoredPhase = item.phase == "ended"
                     ? .ended
@@ -2725,7 +2776,7 @@ actor SessionStore {
                 continue
             }
             sessions[item.sessionId] = session
-            if lifecycleCompletion == nil {
+            if restoredPhase.isActive || restoredPhase.isWaitingForApproval {
                 restoredActiveSessions.append((item.sessionId, item.cwd))
             }
             restoredCount += 1
@@ -2733,8 +2784,8 @@ actor SessionStore {
 
         publishState()
         // Only active sessions need eager chat restoration. Recent completed
-        // cards keep lightweight metadata and load their potentially enormous
-        // transcript lazily if the user explicitly opens the conversation.
+        // and interrupted cards keep lightweight metadata and load their
+        // potentially enormous transcript lazily when explicitly opened.
         for item in restoredActiveSessions {
             await loadHistoryFromFile(sessionId: item.sessionId, cwd: item.cwd)
         }
@@ -2820,6 +2871,9 @@ actor SessionStore {
                 let lifecycle = await conversationParser
                     .codexTaskLifecycle(sessionId: snapshot.sessionId)
                 if case .completed = lifecycle {
+                    continue
+                }
+                if case .interrupted = lifecycle {
                     continue
                 }
             }

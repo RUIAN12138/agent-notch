@@ -39,7 +39,7 @@ final class SessionRowPresentationTests: XCTestCase {
     }
 
     func testNonApprovalPhasesNeverExposeApprovalInteractions() async {
-        for phase: SessionPhase in [.processing, .compacting, .waitingForInput, .idle, .ended] {
+        for phase: SessionPhase in [.processing, .compacting, .waitingForInput, .interrupted, .idle, .ended] {
             let row = presentation(phase: phase, message: "Old question", role: "tool", tool: "AskUserQuestion")
             XCTAssertEqual(row.interaction, .none, "Phase: \(phase)")
         }
@@ -66,6 +66,7 @@ final class SessionRowPresentationTests: XCTestCase {
             (request("AskUserQuestion"), .question),
             (request("ExitPlanMode"), .plan),
             (.waitingForInput, .ready),
+            (.interrupted, .interrupted),
             (.idle, .idle),
             (.ended, .ended),
         ]
@@ -82,7 +83,8 @@ final class SessionRowPresentationTests: XCTestCase {
         let cases: [(SessionPhase, SessionRowPresentation.Status)] = [
             (.processing, .working), (.compacting, .compacting),
             (request("Bash"), .approval), (request("AskUserQuestion"), .question),
-            (request("ExitPlanMode"), .plan), (.idle, .idle), (.ended, .ended),
+            (request("ExitPlanMode"), .plan), (.interrupted, .interrupted),
+            (.idle, .idle), (.ended, .ended),
         ]
         for (phase, expected) in cases {
             XCTAssertEqual(presentation(phase: phase, completedAt: completedAt).status, expected,
@@ -103,6 +105,19 @@ final class SessionRowPresentationTests: XCTestCase {
         let row = presentation(phase: .processing, message: "Old command completed", role: "tool", tool: "Bash")
         XCTAssertEqual(row.activity(language: .english), "Generating response")
         XCTAssertEqual(row.activity(language: .simplifiedChinese), "正在生成回复")
+    }
+
+    func testInterruptedRowUsesItsTerminalStateInsteadOfStaleTranscript() async {
+        let row = presentation(
+            phase: .interrupted,
+            message: "Old turn finished successfully",
+            role: "assistant"
+        )
+
+        XCTAssertEqual(row.status, .interrupted)
+        XCTAssertEqual(row.activity(language: .english), "Turn was interrupted")
+        XCTAssertEqual(row.activity(language: .simplifiedChinese), "本轮已中断")
+        XCTAssertTrue(row.canArchive)
     }
 
     func testProcessingActivityPrefersNewestLiveToolAndNeverShowsItsRawCommand() async {
@@ -219,11 +234,12 @@ final class SessionRowPresentationTests: XCTestCase {
         XCTAssertEqual(Set(cases.map { $0.0.title(language: .simplifiedChinese) }).count, cases.count)
     }
 
-    func testArchivingRemainsLimitedToIdleAndWaitingForInput() async {
+    func testArchivingAllowsIdleReadyAndInterruptedSessions() async {
         let completedAt = Date(timeIntervalSince1970: 200)
         for completion: Date? in [nil, completedAt] {
             XCTAssertTrue(presentation(phase: .idle, completedAt: completion).canArchive)
             XCTAssertTrue(presentation(phase: .waitingForInput, completedAt: completion).canArchive)
+            XCTAssertTrue(presentation(phase: .interrupted, completedAt: completion).canArchive)
             for phase: SessionPhase in [
                 .processing, .compacting, .ended,
                 request("Bash"), request("AskUserQuestion"), request("ExitPlanMode"),

@@ -742,7 +742,7 @@ struct ChatView: View {
             // Codex/CodeBuddy sessions remain resumable after the desktop
             // process reports `ended`; the CLI resume command is precisely
             // how a completed turn receives the next user message.
-            case .idle, .waitingForInput, .ended:
+            case .idle, .waitingForInput, .interrupted, .ended:
                 return true
             default:
                 return false

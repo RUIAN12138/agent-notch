@@ -16,7 +16,8 @@ final class LifecycleReducerTests: XCTestCase {
         observedAt: Date,
         receivedAt: Date,
         origin: LifecycleObservationOrigin = .codexPolling,
-        requestedPhase: SessionPhase? = nil
+        requestedPhase: SessionPhase? = nil,
+        hookEventName: String? = nil
     ) -> SessionLifecycleObservation {
         SessionLifecycleObservation(
             sessionId: "codex-session",
@@ -25,6 +26,7 @@ final class LifecycleReducerTests: XCTestCase {
             origin: origin,
             evidence: evidence,
             requestedPhase: requestedPhase,
+            hookEventName: hookEventName,
             observedAt: observedAt,
             receivedAt: receivedAt
         )
@@ -865,6 +867,157 @@ final class LifecycleReducerTests: XCTestCase {
         XCTAssertEqual(transition.mutation, .none)
         XCTAssertEqual(transition.reason, .interruptOlderThanBoundary)
         XCTAssertFalse(transition.acceptsObservation)
+    }
+
+    func testNativeInterruptionDismissesApprovalWithoutRecordingCompletion() throws {
+        let startedAt = Date(timeIntervalSince1970: 21_700)
+        let interruptedAt = startedAt.addingTimeInterval(2)
+        let current = snapshot(
+            phase: .waitingForApproval(PermissionContext(
+                toolUseId: "pending-tool",
+                toolName: "Bash",
+                toolInput: nil,
+                receivedAt: startedAt.addingTimeInterval(1)
+            )),
+            lastActivity: startedAt.addingTimeInterval(1),
+            turnStartedAt: startedAt,
+            codexToolExecutionStartedAt: startedAt.addingTimeInterval(1)
+        )
+
+        let transition = reduce(
+            current: current,
+            observation: observation(
+                .interrupted(interruptedAt),
+                observedAt: interruptedAt,
+                receivedAt: interruptedAt
+            )
+        )
+
+        XCTAssertEqual(transition.reason, .nativeInterruption)
+        let next = try XCTUnwrap(transition.nextSnapshot)
+        XCTAssertEqual(next.phase, .interrupted)
+        XCTAssertNil(next.completedAt)
+        XCTAssertNil(next.codexToolExecutionStartedAt)
+        XCTAssertEqual(next.lastHookEventAt, interruptedAt)
+    }
+
+    func testInterruptedGenerationRejectsLateActivityAndCompletionButAllowsNewTurn() throws {
+        let startedAt = Date(timeIntervalSince1970: 21_800)
+        let interruptedAt = startedAt.addingTimeInterval(2)
+        let current = snapshot(
+            phase: .interrupted,
+            lastActivity: interruptedAt,
+            lastHookEventAt: interruptedAt,
+            turnStartedAt: startedAt
+        )
+
+        let lateActivity = reduce(
+            current: current,
+            observation: observation(
+                .active(
+                    turnStartedAt: startedAt,
+                    lastEvidenceAt: startedAt.addingTimeInterval(1)
+                ),
+                observedAt: startedAt.addingTimeInterval(1),
+                receivedAt: interruptedAt.addingTimeInterval(1)
+            )
+        )
+        XCTAssertEqual(lateActivity.mutation, .none)
+        XCTAssertEqual(lateActivity.reason, .activeWithoutNewGeneration)
+
+        let lateCompletion = reduce(
+            current: current,
+            observation: observation(
+                .completed(interruptedAt.addingTimeInterval(1)),
+                observedAt: interruptedAt.addingTimeInterval(1),
+                receivedAt: interruptedAt.addingTimeInterval(1)
+            )
+        )
+        XCTAssertEqual(lateCompletion.mutation, .none)
+        XCTAssertEqual(lateCompletion.reason, .completionAfterInterruption)
+
+        let newTurnAt = interruptedAt.addingTimeInterval(1)
+        let newTurn = reduce(
+            current: current,
+            observation: observation(
+                .active(
+                    turnStartedAt: newTurnAt,
+                    lastEvidenceAt: newTurnAt
+                ),
+                observedAt: newTurnAt,
+                receivedAt: newTurnAt
+            )
+        )
+        XCTAssertEqual(newTurn.nextSnapshot?.phase, .processing)
+        XCTAssertNil(newTurn.nextSnapshot?.completedAt)
+    }
+
+    func testNativeInterruptionOlderThanHookBoundaryIsRejected() {
+        let hookAt = Date(timeIntervalSince1970: 21_900)
+        let transition = reduce(
+            current: snapshot(
+                lastActivity: hookAt,
+                lastHookEventAt: hookAt,
+                turnStartedAt: hookAt.addingTimeInterval(-2)
+            ),
+            observation: observation(
+                .interrupted(hookAt.addingTimeInterval(-1)),
+                observedAt: hookAt.addingTimeInterval(-1),
+                receivedAt: hookAt
+            )
+        )
+
+        XCTAssertEqual(transition.mutation, .none)
+        XCTAssertEqual(transition.reason, .interruptionOlderThanBoundary)
+        XCTAssertFalse(transition.acceptsObservation)
+    }
+
+    func testLateHookStopCannotPromoteInterruptionToSuccessfulCompletion() {
+        let interruptedAt = Date(timeIntervalSince1970: 21_950)
+        let transition = reduce(
+            current: snapshot(
+                phase: .interrupted,
+                lastActivity: interruptedAt,
+                lastHookEventAt: interruptedAt,
+                turnStartedAt: interruptedAt.addingTimeInterval(-2)
+            ),
+            observation: observation(
+                .hook(.completed),
+                observedAt: interruptedAt.addingTimeInterval(1),
+                receivedAt: interruptedAt.addingTimeInterval(1),
+                origin: .hook,
+                requestedPhase: .waitingForInput,
+                hookEventName: "Stop"
+            )
+        )
+
+        XCTAssertEqual(transition.mutation, .none)
+        XCTAssertEqual(transition.reason, .completionAfterInterruption)
+        XCTAssertFalse(transition.acceptsObservation)
+    }
+
+    func testFreshCodexPromptHookCanResumeAnInterruptedSession() {
+        let interruptedAt = Date(timeIntervalSince1970: 21_975)
+        let promptAt = interruptedAt.addingTimeInterval(1)
+        let transition = reduce(
+            current: snapshot(
+                phase: .interrupted,
+                lastActivity: interruptedAt,
+                lastHookEventAt: interruptedAt,
+                turnStartedAt: interruptedAt.addingTimeInterval(-2)
+            ),
+            observation: observation(
+                .hook(.active),
+                observedAt: promptAt,
+                receivedAt: promptAt,
+                origin: .hook,
+                requestedPhase: .processing,
+                hookEventName: "UserPromptSubmit"
+            )
+        )
+
+        XCTAssertEqual(transition.nextSnapshot?.phase, .processing)
+        XCTAssertNil(transition.nextSnapshot?.completedAt)
     }
 
     func testMatchingProcessExitEndsSession() throws {

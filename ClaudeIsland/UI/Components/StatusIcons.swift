@@ -233,7 +233,7 @@ struct StatusIcon: View {
             WaitingForApprovalIcon(size: size)
         case .processing, .compacting:
             RunningIcon(size: size)
-        case .idle, .ended:
+        case .idle, .interrupted, .ended:
             IdleIcon(size: size)
         }
     }

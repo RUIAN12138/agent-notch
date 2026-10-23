@@ -71,7 +71,7 @@ nonisolated struct SessionDiagnosticsSummary: Codable, Equatable, Sendable {
 /// A separate Codable value keeps the reducer's phase enum free of report
 /// concerns, and prevents a PermissionContext from entering the export.
 nonisolated enum LifecyclePhaseKindValue: String, Codable, Equatable, Sendable {
-    case idle, processing, waitingForInput, waitingForApproval, compacting, ended
+    case idle, processing, waitingForInput, waitingForApproval, compacting, interrupted, ended
 
     init(_ phase: LifecyclePhaseKind) {
         switch phase {
@@ -80,6 +80,7 @@ nonisolated enum LifecyclePhaseKindValue: String, Codable, Equatable, Sendable {
         case .waitingForInput: self = .waitingForInput
         case .waitingForApproval: self = .waitingForApproval
         case .compacting: self = .compacting
+        case .interrupted: self = .interrupted
         case .ended: self = .ended
         }
     }
@@ -273,6 +274,7 @@ nonisolated enum LifecycleDiagnosticsAssembler {
         case .active: return "active"
         case .activeTool: return "active_tool"
         case .completed: return "completed"
+        case .interrupted: return "interrupted"
         case .missing: return "missing"
         case .unknown: return "unknown"
         case .hook(let signal): return "hook.\(signal.rawValue)"

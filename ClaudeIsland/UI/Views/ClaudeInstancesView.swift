@@ -374,6 +374,7 @@ struct InstanceRow: View {
         switch presentation.status {
         case .approval, .question, .plan: TerminalColors.amber
         case .completed: TerminalColors.green
+        case .interrupted: TerminalColors.dim
         default: .white.opacity(0.7)
         }
     }
@@ -384,6 +385,7 @@ struct InstanceRow: View {
         case .question: "questionmark.bubble"
         case .plan: "doc.text"
         case .completed: "checkmark.circle"
+        case .interrupted: "xmark.circle"
         case .ready: "bubble.left"
         case .ended: "stop.circle"
         case .idle: "circle.dotted"

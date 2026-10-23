@@ -72,6 +72,7 @@ nonisolated enum LifecycleEvidence: Equatable, Sendable {
         toolStartedAt: Date
     )
     case completed(Date?)
+    case interrupted(Date?)
     case missing
     case unknown
     case hook(HookLifecycleSignal)
@@ -98,6 +99,8 @@ nonisolated enum LifecycleEvidence: Equatable, Sendable {
             )
         case .completed(let completedAt):
             self = .completed(completedAt)
+        case .interrupted(let interruptedAt):
+            self = .interrupted(interruptedAt)
         case .missing:
             self = .missing
         case .unknown:
@@ -211,6 +214,7 @@ nonisolated enum LifecycleTransitionReason: String, Equatable, Sendable {
     case activeToolReopenedStaleSession
     case newerTurnStarted
     case nativeCompletion
+    case nativeInterruption
     case staleActiveTimedOut
     case unknownActiveTimedOut
     case sourceMissingBeyondGrace
@@ -220,6 +224,8 @@ nonisolated enum LifecycleTransitionReason: String, Equatable, Sendable {
     case activeWithoutNewGeneration
     case completionOlderThanHook
     case completionOlderThanTurn
+    case completionAfterInterruption
+    case interruptionOlderThanBoundary
     case interactionHasPriority
     case missingWithinGrace
     case unknownWithinGrace
@@ -282,6 +288,8 @@ nonisolated struct LifecycleTransition: Equatable, Sendable {
              .activeWithoutNewGeneration,
              .completionOlderThanHook,
              .completionOlderThanTurn,
+             .completionAfterInterruption,
+             .interruptionOlderThanBoundary,
              .sessionNotFound,
              .hookOlderThanBoundary,
              .subagentCompletionCannotResume,
@@ -305,6 +313,7 @@ nonisolated enum LifecyclePhaseKind: String, Equatable, Sendable {
     case waitingForInput
     case waitingForApproval
     case compacting
+    case interrupted
     case ended
 
     init(_ phase: SessionPhase) {
@@ -319,6 +328,8 @@ nonisolated enum LifecyclePhaseKind: String, Equatable, Sendable {
             self = .waitingForApproval
         case .compacting:
             self = .compacting
+        case .interrupted:
+            self = .interrupted
         case .ended:
             self = .ended
         }
@@ -424,6 +435,13 @@ nonisolated enum LifecycleReducer {
                 completedAt: completedAt
             )
 
+        case .interrupted(let interruptedAt):
+            return reduceInterruption(
+                current: current,
+                observation: observation,
+                interruptedAt: interruptedAt
+            )
+
         case .missing:
             return reduceMissing(
                 current: current,
@@ -509,6 +527,17 @@ nonisolated enum LifecycleReducer {
         }
 
         let interactionHasPriority = next.phase.isWaitingForApproval
+
+        if next.phase == .interrupted {
+            let interruptionBoundary = next.lastHookEventAt ?? next.lastActivity
+            guard let turnStartedAt,
+                  turnStartedAt > interruptionBoundary else {
+                return LifecycleTransition(
+                    mutation: .none,
+                    reason: .activeWithoutNewGeneration
+                )
+            }
+        }
 
         if let lastHookEventAt = next.lastHookEventAt,
            evidenceAt <= lastHookEventAt {
@@ -608,6 +637,12 @@ nonisolated enum LifecycleReducer {
                 reason: .sessionNotFound
             )
         }
+        guard next.phase != .interrupted else {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .completionAfterInterruption
+            )
+        }
         guard !next.phase.isWaitingForApproval else {
             return LifecycleTransition(
                 mutation: .none,
@@ -645,6 +680,58 @@ nonisolated enum LifecycleReducer {
         return LifecycleTransition(
             mutation: .update(next),
             reason: .nativeCompletion
+        )
+    }
+
+    /// A native abort/cancel closes only the generation that produced it.
+    /// Unlike completion, it must dismiss any pending interaction and must not
+    /// create a success timestamp or completion notification. A later turn is
+    /// allowed to reopen the row only when its start timestamp is newer.
+    private static func reduceInterruption(
+        current: SessionLifecycleSnapshot?,
+        observation: SessionLifecycleObservation,
+        interruptedAt: Date?
+    ) -> LifecycleTransition {
+        guard var next = current else {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .sessionNotFound
+            )
+        }
+
+        let terminalAt = interruptedAt ?? observation.observedAt
+        let latestBoundary = max(
+            max(
+                next.lastHookEventAt ?? .distantPast,
+                next.completedAt ?? .distantPast
+            ),
+            next.turnStartedAt ?? .distantPast
+        )
+        guard terminalAt >= latestBoundary else {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .interruptionOlderThanBoundary
+            )
+        }
+
+        let previous = next
+        next.phase = .interrupted
+        next.lastActivity = max(next.lastActivity, terminalAt)
+        next.lastHookEventAt = max(
+            next.lastHookEventAt ?? .distantPast,
+            terminalAt
+        )
+        next.completedAt = nil
+        next.codexToolExecutionStartedAt = nil
+        guard next != previous else {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .alreadyCurrent
+            )
+        }
+        return LifecycleTransition(
+            mutation: .update(next),
+            reason: .nativeInterruption
         )
     }
 
@@ -734,6 +821,19 @@ nonisolated enum LifecycleReducer {
 
         switch signal {
         case .active, .interaction, .compacting:
+            if next.phase == .interrupted {
+                let isCodexGenerationStart = observation.source == .codex &&
+                    (observation.hookEventName == .userPromptSubmit ||
+                     observation.hookEventName == .preToolUse ||
+                     observation.hookEventName == .sessionStart)
+                guard isCodexGenerationStart,
+                      observedAt > (next.lastHookEventAt ?? .distantPast) else {
+                    return LifecycleTransition(
+                        mutation: .none,
+                        reason: .activeWithoutNewGeneration
+                    )
+                }
+            }
             // Claude may finish an internal/background subagent after the
             // parent's Stop (e.g. an interactive prompt-suggestion task). Its
             // fresh delivery timestamp is not a new parent-turn boundary.
@@ -802,6 +902,12 @@ nonisolated enum LifecycleReducer {
             )
 
         case .completed:
+            guard next.phase != .interrupted else {
+                return LifecycleTransition(
+                    mutation: .none,
+                    reason: .completionAfterInterruption
+                )
+            }
             if let turnStartedAt = next.turnStartedAt,
                turnStartedAt > observedAt {
                 return LifecycleTransition(

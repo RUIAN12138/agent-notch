@@ -19,7 +19,7 @@ struct SessionPhaseHelpers {
             return TerminalColors.cyan
         case .compacting:
             return TerminalColors.magenta
-        case .idle, .ended:
+        case .idle, .interrupted, .ended:
             return TerminalColors.dim
         }
     }
@@ -35,6 +35,8 @@ struct SessionPhaseHelpers {
             return "Processing..."
         case .compacting:
             return "Compacting context..."
+        case .interrupted:
+            return "Turn interrupted"
         case .idle:
             return "Idle"
         case .ended:

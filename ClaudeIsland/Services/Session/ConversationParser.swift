@@ -143,6 +143,10 @@ nonisolated enum CodexTaskLifecycle: Equatable, Sendable {
         toolStartedAt: Date
     )
     case completed(Date?)
+    /// Codex explicitly stopped the current turn without completing it.
+    /// This is terminal for the current generation, but not a successful
+    /// completion and must not produce completion attention.
+    case interrupted(Date?)
     case missing
     case unknown
 }
@@ -937,6 +941,7 @@ actor ConversationParser {
             "\"thread_rolled_back\"",
             "\"final_answer\""
         ].map { Data($0.utf8) }
+        var newestCompletionOffset: Data.Index?
 
         var lineEnd = data.endIndex
         if lineEnd > data.startIndex,
@@ -960,10 +965,38 @@ actor ConversationParser {
                let row = try? JSONSerialization.jsonObject(with: line)
                     as? [String: Any],
                isCodexLifecycleBoundary(row) {
-                return UInt64(lineStart)
+                if row["type"] as? String == "response_item" {
+                    newestCompletionOffset = newestCompletionOffset ?? lineStart
+                } else if let payload = row["payload"] as? [String: Any],
+                          let eventType = payload["type"] as? String {
+                    switch eventType {
+                    case "task_started":
+                        // This start is newer than any earlier abort or
+                        // completion, so replay its full generation.
+                        return UInt64(lineStart)
+                    case "turn_aborted", "task_aborted", "task_cancelled",
+                         "task_canceled", "turn_cancelled", "turn_canceled",
+                         "thread_rolled_back":
+                        // Keep an abort even if a delayed completion row was
+                        // appended afterward; the row is stale unless a newer
+                        // task_started established another generation.
+                        return UInt64(lineStart)
+                    case "task_complete", "task_failed", "turn_failed":
+                        newestCompletionOffset = newestCompletionOffset ?? lineStart
+                    case "agent_message"
+                        where payload["phase"] as? String == "final_answer":
+                        newestCompletionOffset = newestCompletionOffset ?? lineStart
+                    default:
+                        break
+                    }
+                }
             }
             guard let precedingNewline else { break }
             lineEnd = precedingNewline
+        }
+
+        if let newestCompletionOffset {
+            return UInt64(newestCompletionOffset)
         }
 
         return fileSize > codexLifecycleTailBudget
@@ -1357,6 +1390,9 @@ actor ConversationParser {
 
         if type == "agent_message",
            payload["phase"] as? String == "final_answer" {
+            guard !isCodexLifecycleInterrupted(state.lifecycle) else {
+                return false
+            }
             // Codex renders the final response shortly before task_complete.
             state.pendingToolStartedAt.removeAll()
             state.lifecycle = .completed(timestamp)
@@ -1416,16 +1452,22 @@ actor ConversationParser {
                 )
             }
             return isCodexTurnActive(state.lifecycle)
-        case "task_complete",
-             "turn_aborted",
+        case "turn_aborted",
              "task_aborted",
              "task_cancelled",
              "task_canceled",
              "turn_cancelled",
              "turn_canceled",
-             "task_failed",
-             "turn_failed",
              "thread_rolled_back":
+            state.pendingToolStartedAt.removeAll()
+            state.lifecycle = .interrupted(timestamp)
+            return false
+        case "task_complete",
+             "task_failed",
+             "turn_failed":
+            guard !isCodexLifecycleInterrupted(state.lifecycle) else {
+                return false
+            }
             state.pendingToolStartedAt.removeAll()
             state.lifecycle = .completed(timestamp)
             return false
@@ -1448,6 +1490,9 @@ actor ConversationParser {
         if type == "message",
            payload["role"] as? String == "assistant",
            payload["phase"] as? String == "final_answer" {
+            guard !isCodexLifecycleInterrupted(state.lifecycle) else {
+                return false
+            }
             state.pendingToolStartedAt.removeAll()
             state.lifecycle = .completed(timestamp)
             return false
@@ -1532,7 +1577,7 @@ actor ConversationParser {
         switch lifecycle {
         case .active, .activeTool:
             return true
-        case .completed, .missing, .unknown:
+        case .completed, .interrupted, .missing, .unknown:
             return false
         }
     }
@@ -1540,7 +1585,18 @@ actor ConversationParser {
     nonisolated private static func isCodexLifecycleCompleted(
         _ lifecycle: CodexTaskLifecycle
     ) -> Bool {
-        if case .completed = lifecycle { return true }
+        switch lifecycle {
+        case .completed, .interrupted:
+            return true
+        case .active, .activeTool, .missing, .unknown:
+            return false
+        }
+    }
+
+    nonisolated private static func isCodexLifecycleInterrupted(
+        _ lifecycle: CodexTaskLifecycle
+    ) -> Bool {
+        if case .interrupted = lifecycle { return true }
         return false
     }
 

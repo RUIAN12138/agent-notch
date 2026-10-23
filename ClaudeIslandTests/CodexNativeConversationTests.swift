@@ -563,6 +563,95 @@ final class CodexNativeConversationTests: XCTestCase {
         XCTAssertEqual(updated.lastActivity, fileModifiedAt)
     }
 
+    func testCancellationEventsRemainInterruptedUntilANewerTurnStarts() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let start = "2026-09-24T08:30:00.000Z"
+        let abort = "2026-09-24T08:30:01.000Z"
+        let cancellationTypes = [
+            "turn_aborted", "task_aborted", "task_cancelled", "task_canceled",
+            "turn_cancelled", "turn_canceled", "thread_rolled_back"
+        ]
+
+        for type in cancellationTypes {
+            let sessionId = "cancelled-\(type)"
+            let url = try rolloutURL(root: root, sessionId: sessionId)
+            try writeLines([
+                try encoded(metadata(sessionId: sessionId, cwd: "/tmp/cancelled")),
+                try encoded([
+                    "timestamp": start,
+                    "type": "event_msg",
+                    "payload": ["type": "task_started"]
+                ]),
+                try encoded([
+                    "timestamp": abort,
+                    "type": "event_msg",
+                    "payload": ["type": type]
+                ])
+            ], to: url)
+
+            let parser = ConversationParser(codexSessionsRoot: root)
+            guard case .interrupted = await parser.codexTaskLifecycle(sessionId: sessionId) else {
+                return XCTFail("Expected \(type) to remain an interruption")
+            }
+        }
+
+        let sessionId = "aborted-then-completed"
+        let url = try rolloutURL(root: root, sessionId: sessionId)
+        let parser = ConversationParser(codexSessionsRoot: root)
+        try writeLines([
+            try encoded(metadata(sessionId: sessionId, cwd: "/tmp/cancelled")),
+            try encoded([
+                "timestamp": start,
+                "type": "event_msg",
+                "payload": ["type": "task_started"]
+            ]),
+            try encoded([
+                "timestamp": abort,
+                "type": "event_msg",
+                "payload": ["type": "turn_aborted"]
+            ]),
+            try encoded([
+                "timestamp": "2026-09-24T08:30:02.000Z",
+                "type": "event_msg",
+                "payload": ["type": "task_complete"]
+            ])
+        ], to: url)
+
+        guard case .interrupted = await parser.codexTaskLifecycle(sessionId: sessionId) else {
+            return XCTFail("A delayed completion row must not rewrite a canceled turn")
+        }
+
+        try writeLines([
+            try encoded(metadata(sessionId: sessionId, cwd: "/tmp/cancelled")),
+            try encoded([
+                "timestamp": start,
+                "type": "event_msg",
+                "payload": ["type": "task_started"]
+            ]),
+            try encoded([
+                "timestamp": abort,
+                "type": "event_msg",
+                "payload": ["type": "turn_aborted"]
+            ]),
+            try encoded([
+                "timestamp": "2026-09-24T08:30:03.000Z",
+                "type": "event_msg",
+                "payload": ["type": "task_started"]
+            ])
+        ], to: url, options: .atomic)
+
+        guard case .active(let turnStartedAt, _) = await parser.codexTaskLifecycle(sessionId: sessionId) else {
+            return XCTFail("A newer task_started row should reopen the session")
+        }
+        XCTAssertEqual(
+            turnStartedAt,
+            formatter.date(from: "2026-09-24T08:30:03.000Z")
+        )
+    }
+
     func testUnrelatedRolloutWriteDoesNotRefreshActiveEvidence() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

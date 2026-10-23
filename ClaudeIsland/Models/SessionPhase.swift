@@ -104,6 +104,10 @@ enum SessionPhase: Sendable {
     /// Context is being compacted (auto or manual)
     case compacting
 
+    /// The current turn was explicitly canceled/interrupted by the agent.
+    /// This is terminal for this generation, but is not successful completion.
+    case interrupted
+
     /// Session has ended
     case ended
 
@@ -118,6 +122,10 @@ enum SessionPhase: Sendable {
 
         // Any state can transition to ended
         case (_, .ended):
+            return true
+
+        // An explicit native interruption closes the current generation.
+        case (_, .interrupted):
             return true
 
         // Idle transitions
@@ -166,6 +174,13 @@ enum SessionPhase: Sendable {
         case (.compacting, .idle):
             return true
         case (.compacting, .waitingForInput):
+            return true
+
+        // A later user turn may resume the session after an interruption.
+        case (.interrupted, .processing),
+             (.interrupted, .waitingForInput),
+             (.interrupted, .waitingForApproval),
+             (.interrupted, .compacting):
             return true
 
         // Allow staying in same state (no-op transitions)
@@ -227,6 +242,7 @@ extension SessionPhase: Equatable {
         case (.waitingForApproval(let ctx1), .waitingForApproval(let ctx2)):
             return ctx1 == ctx2
         case (.compacting, .compacting): return true
+        case (.interrupted, .interrupted): return true
         case (.ended, .ended): return true
         default: return false
         }
@@ -248,6 +264,8 @@ extension SessionPhase: CustomStringConvertible {
             return "waitingForApproval(\(ctx.toolName))"
         case .compacting:
             return "compacting"
+        case .interrupted:
+            return "interrupted"
         case .ended:
             return "ended"
         }

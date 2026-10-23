@@ -307,29 +307,35 @@ class ClaudeSessionMonitor: ObservableObject {
             $0.completedAt == nil &&
                 ($0.phase.isActive || $0.phase.isWaitingForApproval)
         }
-        let recentCompleted = sessions
+        let recentTerminal = sessions
             .filter { session in
-                guard let completedAt = session.completedAt else {
-                    return false
-                }
-                return now.timeIntervalSince(completedAt) <
+                let terminalAt = session.phase == .interrupted
+                    ? session.lastActivity
+                    : session.completedAt
+                guard let terminalAt else { return false }
+                return now.timeIntervalSince(terminalAt) <
                     SessionRetentionPolicy.completedLifetime
             }
             .sorted {
-                ($0.completedAt ?? .distantPast) >
-                    ($1.completedAt ?? .distantPast)
+                let lhs = ($0.phase == .interrupted
+                    ? $0.lastActivity
+                    : $0.completedAt) ?? .distantPast
+                let rhs = ($1.phase == .interrupted
+                    ? $1.lastActivity
+                    : $1.completedAt) ?? .distantPast
+                return lhs > rhs
             }
 
-        let visibleCompleted: ArraySlice<SessionState>
+        let visibleTerminal: ArraySlice<SessionState>
         if active.count >= SessionRetentionPolicy.activeCrowdingThreshold {
-            visibleCompleted = []
+            visibleTerminal = []
         } else {
-            visibleCompleted = recentCompleted.prefix(
+            visibleTerminal = recentTerminal.prefix(
                 SessionRetentionPolicy.maximumVisibleCompleted
             )
         }
 
-        instances = active + visibleCompleted
+        instances = active + visibleTerminal
         pendingInstances = active.filter { $0.needsAttention }
     }
 

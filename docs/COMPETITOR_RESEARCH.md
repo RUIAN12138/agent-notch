@@ -1,7 +1,7 @@
 # 竞品逆向证据与 Agent Notch 决策记录
 
 审查日期：2026-10-23
-Agent Notch 基线：`main` / `fb28d5d`
+Agent Notch 基线：`main` / `93ee7f3`（本轮改动前）
 范围：Vibe Island 1.0.54 官方 DMG、Boring Notch 2.7.3 官方 DMG，以及 Boring Notch `v2.7.3` 源码标签。
 
 ## 证据边界
@@ -43,6 +43,8 @@ Boring Notch `v2.7.3` 的设置视图提供“Hide from screen recording”选�
 补充静态查看官方 GitHub 上的 `v2.8-rc.1` 预发布源码后，发现 `ContentView.swift` 将当前通知与音乐列为有序 `liveActivities`，由 `activityIndex` 选择前台项；通知优先显示，过期后从活动集合自然消失，底层音乐即可重新出现，无需额外记录“恢复到哪个内容”。其 [`v2.8-rc.1` 发布说明](https://github.com/TheBoredTeam/boring.notch/releases/tag/v2.8-rc.1)另列出高 CPU 占用、通知 UI、镜像尺寸和音频输出悬停方面的修复。这些发布说明是上游自述，并非本地性能测量。
 
 这条证据来自[`v2.8-rc.1` 的 `ContentView.swift`](https://github.com/TheBoredTeam/boring.notch/blob/v2.8-rc.1/boringNotch/ContentView.swift)，不是已检查的 `v2.7.3` DMG 或标签；本轮没有取得、用 REA 检查或运行 `v2.8-rc.1` 二进制。因此它只作为更晚源码的设计参考。可迁移的原则是将短暂提示按优先级建模并让过期项自然退出；Agent Notch 若实现多提示汇聚，审批/提问与用户主动打开的面板仍必须高于完成提示。
+
+官方 Releases 页面现还列出 `v2.8-rc.2`，发布说明提到活动显示跟随偏好、音乐/封面和设置页行为等修复；这只是上游发布说明，不代表已分析该版本源码或二进制。当前工作仍以已检查的 `v2.7.3` 静态包和 `v2.8-rc.1` 源码为依据，不推断 `rc.2` 的内部实现。[Boring Notch 官方 Releases](https://github.com/TheBoredTeam/boring.notch/releases)
 
 ## 当前版本包与启动边界（2026-10-23）
 
@@ -96,6 +98,16 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 
 新增用例覆盖陈旧事件时间配合新文件写入、无关行不得刷新活动，以及长时间工具调用遇到较新证据时保持 processing；Codex 原生解析和生命周期裁决两个测试套件共 `43 passed / 0 failed`，随后完整 macOS XCTest 共 `390 passed / 0 failed / 0 skipped`。这是本地 XCTest 证据，不等于 Codex GUI、真实长任务或桌面刘海状态切换验收。
 
+## Codex 取消与成功完成分流
+
+Vibe Island `1.0.54` 官方更新记录还声称：Codex 按 Esc 取消会清除审批卡片但不播放完成音，中断回合不再继续显示 Working；这是上游发布说明，不是本机竞品运行观察。[官方更新记录](https://vibeisland.app/changelog/)
+
+Agent Notch 原先把 `turn_aborted`、`task_aborted`、`task_cancelled`、`task_canceled`、`turn_cancelled`、`turn_canceled`、`thread_rolled_back` 与 `task_complete` 一并解析成成功完成，导致取消被标为已完成、进入完成保留/通知路径，也可能被迟到的旧活动证据重新显示为工作中。现在解析器为这些取消事件保留独立的 `.interrupted` 生命周期；Reducer 按源时间拒绝较旧中断、阻止同一代的迟到活动或完成记录复活，只允许时间更新的 `task_started` 开启下一代。接受中断时清理挂起审批和未完成工具、取消外部权限请求，并按现有五小时终端会话保留策略保存可归档的“已中断”卡片；该状态没有 `completedAt`，因此不进入成功完成提醒/声音路径。持久化恢复和生命周期诊断也区分 interrupted 与 completed。
+
+本轮仅拆分取消/回滚语义；`task_failed`、`turn_failed` 当前仍沿用成功完成状态，未在本轮改成独立“失败”态，避免把失败误写成“已中断”。这仍是后续可单独处理的状态准确性问题。
+
+新增 Codex 原生解析、Reducer 和会话行回归用例覆盖七种取消事件、取消后迟到完成、同代迟到活动拒绝、新一代恢复、待审批覆盖以及不生成完成时间。本轮完整 macOS XCTest 为 `404 passed / 0 failed / 0 skipped`；Xcode 同时报告一条位于既有 `ProcessExecutorTests.swift` 的 QoS priority-inversion 运行时警告。仍是本地 XCTest，不证明真实 Codex GUI 的 Esc 行为或安装后提示/声音验收。
+
 ## 转录时间戳精度与生命周期边界
 
 继续检查 Claude 状态时序时发现，公共 ISO 8601 解析器只启用了小数秒选项，但同仓库的 Claude JSONL fixture 会生成合法的整秒格式。解析失败后旧代码用读取时的 `Date()` 替代源时间，导致旧转录可能被误当成当前事件。现在解析器同时接受有/无小数秒时间；缺失或损坏的时间戳仍可供聊天内容显示，但会标记为不可靠，并从 transcript 生命周期裁决中排除。新增目标用例 `3 passed / 0 failed`。完整 macOS XCTest 执行了 393 项：389 项通过，4 个用例失败（合计 5 条断言失败）；失败涉及 3 个 `ProcessExecutorTests` 的时限断言和 1 个 `SessionStoreWatcherRecoveryTests` 恢复等待超时。后者单独重跑 `1 passed / 0 failed`；单独重跑 ProcessExecutor 用例时 Xcode 在测试启动前停滞，随后中止，因此它们是否仅为并发负载波动仍未确认。完整结果属于本机 XCTest，不代表真实 Agent/GUI 验收。
@@ -125,7 +137,7 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 - **新增可选策略**：Vibe Island 安装包静态资源展示根任务与 Team 队友完成自动展开，以及三种子 Agent 通知时机；Agent Notch 已实现默认关闭的根任务完成和队友完成展开，并复用既有停留时长自动收起，保留审批、用户所有权和全屏策略优先级。基于 Claude Hook 的精确 `agent_id`，队友提醒已支持“每个子 Agent / 全部完成后 / 主 Agent 回复时”三种时机；有效的本轮活动子 Agent 即使在根 Agent 已结束响应后才完成，也只生成队友提醒，不复活根会话状态。
 - **候选但暂缓**：Vibe Island 的平台化 RemoteAgent manifest 与版本/散列清单可作为未来分发设计参考；当前不引入 SSH/远程执行能力，避免在核心状态与审批可靠性尚需真实运行验收时扩张权限面。
 - **暂不采用**：Vibe Island 的价格数据资源；Agent Notch 已有订阅用量与会话 token 数据，但没有经过验证的跨模型成本口径，本轮也不扩展该功能。
-- **未验证**：Vibe Island 的真实展开/收起、Agent 状态与审批交互。REA residual unknown `unk_055a4d687c6b84aff4d6bfdb2cc58b8da51794c7c245ccb8d34ed25647e99186` 要求 controlled replay；后续若要启动竞品 app，须在动作时确认，并避免登录、授权系统控制、触发终端控制或远程资产下载。
+- **未验证**：Vibe Island 的真实展开/收起、Agent 状态与审批交互。2026-10-23 查询当前 REA unknown registry 返回 0 项；这不代表竞品运行行为已验证。本轮明确选择仅静态分析，因此仍没有 UI/运行轨迹，也不启动竞品。
 - **未验证**：Boring Notch 发行二进制与源码 tag 的构建对应关系，以及两款竞品在真实桌面中的完整行为矩阵。
 
 因此本记录不是“竞品功能已经完整复刻”或“真实 Mac 交互验收通过”的声明，而是后续实现可引用的静态证据、已采纳决策和剩余验证边界。
