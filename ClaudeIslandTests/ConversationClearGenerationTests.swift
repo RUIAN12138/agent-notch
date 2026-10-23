@@ -60,6 +60,23 @@ final class ConversationClearGenerationTests: XCTestCase {
             try handle.seekToEnd()
             try handle.write(contentsOf: data)
         }
+
+        func append(_ text: String, timestamp: String, role: String = "user") throws {
+            let content: Any = role == "assistant"
+                ? [["type": "text", "text": text]]
+                : text
+            var data = try JSONSerialization.data(withJSONObject: [
+                "type": role,
+                "uuid": UUID().uuidString,
+                "timestamp": timestamp,
+                "message": ["role": role, "content": content]
+            ])
+            data.append(0x0A)
+            let handle = try FileHandle(forWritingTo: file)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        }
     }
 
     private let clear = "<command-name>/clear</command-name>"
@@ -72,6 +89,42 @@ final class ConversationClearGenerationTests: XCTestCase {
         XCTAssertEqual(result.newMessages.map(\.textContent), ["current"])
         XCTAssertEqual(result.allMessages.map(\.textContent), ["current"])
         XCTAssertTrue(result.clearDetected)
+    }
+
+    func testWholeSecondAndFractionalISO8601TimestampsArePreserved() async throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let wholeSecond = "2026-10-23T02:03:04Z"
+        let fractional = "2026-10-23T02:03:05.678Z"
+        try fixture.append("whole second", timestamp: wholeSecond)
+        try fixture.append("fractional", timestamp: fractional)
+
+        let result = await fixture.parser.parseIncremental(
+            sessionId: fixture.id,
+            cwd: fixture.cwd
+        )
+        let messages = result.newMessages
+        XCTAssertEqual(messages.map(\.textContent), ["whole second", "fractional"])
+        XCTAssertTrue(messages.allSatisfy(\.hasReliableTimestamp))
+
+        let standardFormatter = ISO8601DateFormatter()
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        XCTAssertEqual(messages[0].timestamp, standardFormatter.date(from: wholeSecond))
+        XCTAssertEqual(messages[1].timestamp, fractionalFormatter.date(from: fractional))
+    }
+
+    func testMalformedTimestampIsNotMarkedAsLifecycleEvidence() async throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try fixture.append("response with bad clock", timestamp: "not-a-date", role: "assistant")
+
+        let result = await fixture.parser.parseIncremental(
+            sessionId: fixture.id,
+            cwd: fixture.cwd
+        )
+        let message = try XCTUnwrap(result.newMessages.first)
+        XCTAssertFalse(message.hasReliableTimestamp)
     }
 
     func testIncrementalBatchDropsRowsBeforeClearAndConsumesFlagOnce() async throws {

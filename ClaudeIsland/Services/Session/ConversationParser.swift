@@ -176,6 +176,14 @@ actor ConversationParser {
     nonisolated private static func parseISO8601(_ value: String) -> Date? {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: value) {
+            return date
+        }
+
+        // Claude, Codex, and CodeBuddy may emit timestamps at whole-second
+        // precision. Requiring fractional seconds made those valid rows fall
+        // through to Date() at parse time, corrupting lifecycle ordering.
+        formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: value)
     }
 
@@ -2291,7 +2299,8 @@ actor ConversationParser {
                                         id: messageID,
                                         role: role,
                                         timestamp: timestamp ?? Date(),
-                                        content: [.text(cleaned)]
+                                        content: [.text(cleaned)],
+                                        hasReliableTimestamp: timestamp != nil
                                     )
                                     state.messages.append(message)
                                     newMessages.append(message)
@@ -2552,12 +2561,9 @@ actor ConversationParser {
             return nil
         }
 
-        let timestamp: Date
-        if let timestampStr = json["timestamp"] as? String {
-            timestamp = Self.parseISO8601(timestampStr) ?? Date()
-        } else {
-            timestamp = Date()
-        }
+        let parsedTimestamp = (json["timestamp"] as? String)
+            .flatMap(Self.parseISO8601)
+        let timestamp = parsedTimestamp ?? Date()
 
         var blocks: [MessageBlock] = []
 
@@ -2621,7 +2627,8 @@ actor ConversationParser {
             id: uuid,
             role: role,
             timestamp: timestamp,
-            content: blocks
+            content: blocks,
+            hasReliableTimestamp: parsedTimestamp != nil
         )
     }
 

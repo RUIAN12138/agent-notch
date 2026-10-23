@@ -1976,7 +1976,8 @@ actor SessionStore {
         guard session.source != .codex else { return }
         guard !session.phase.isWaitingForApproval else { return }
 
-        let lastMessage = payload.messages.max(by: {
+        let lifecycleMessages = payload.messages.filter(\.hasReliableTimestamp)
+        let lastMessage = lifecycleMessages.max(by: {
             $0.timestamp < $1.timestamp
         })
         let lastAssistantStartsTool = lastMessage?.content.contains { block in
@@ -2006,7 +2007,7 @@ actor SessionStore {
             evidence = .completed(lastMessage.timestamp)
             observedAt = lastMessage.timestamp
         } else if let latestRunningToolAt {
-            let latestUserMessageAt = payload.messages
+            let latestUserMessageAt = lifecycleMessages
                 .filter { $0.role == .user }
                 .map(\.timestamp)
                 .max()

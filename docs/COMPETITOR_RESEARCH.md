@@ -1,7 +1,7 @@
 # 竞品逆向证据与 Agent Notch 决策记录
 
 审查日期：2026-10-23
-Agent Notch 基线：`main` / `5154504`
+Agent Notch 基线：`main` / `83f9474`
 范围：Vibe Island 1.0.54 官方 DMG、Boring Notch 2.7.3 官方 DMG，以及 Boring Notch `v2.7.3` 源码标签。
 
 ## 证据边界
@@ -31,6 +31,12 @@ Vibe Island 资源 occurrence 的完整逻辑路径为 `VibeIsland.dmg/Vibe Isla
 - 源码：[悬停与展开处理](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/boringNotch/ContentView.swift)、[视图模型](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/boringNotch/models/BoringViewModel.swift)、[GPL-3.0 许可](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/LICENSE)
 - 迁移方式：只采纳“延迟任务必须可撤销、触发时再次验证当前状态”的交互原则，不复制其源码或可识别的界面表达。
 - 已落地：Agent Notch 在 `d769929` 为指针转换增加独立代次，覆盖重排、展开、收起、用户接管和审批弹出；旧回调即使在指针回到相同状态后执行也会失效。本轮进一步将默认悬停进入延迟设为 0.3 秒、离开收起延迟设为 0.2 秒，并把收起延迟下限开放到 0.1 秒；单独保存的用户值保持不变。相关代码与回归测试位于 `ClaudeIsland/Core/NotchViewModel.swift`、`ClaudeIsland/Core/Settings.swift`、`ClaudeIsland/UI/Views/NotchStudioSettingsView.swift` 和 `ClaudeIslandTests/NotchPointerInteractionTests.swift`。
+
+### 录屏隐藏开关：能力参考与不采纳边界
+
+Boring Notch `v2.7.3` 的设置视图提供“Hide from screen recording”选项，`BoringNotchSkyLightWindow.swift` 会据此设置 `NSWindow.sharingType`。这是对应源码标签的静态观察，不等于发行包运行行为。Apple 当前文档把 `.none` 标为 legacy，并明确警告不要依赖它隐藏屏幕捕获中的内容；因此 Agent Notch 不会照搬该实现，也不会以此向用户承诺截图/录屏隐私。若未来要做类似偏好，必须先找到当前受支持且经真实系统捕获验证的机制；仅隐藏窗口或设置旧 API 不足以证明内容未被捕获。
+
+- 参考：[Boring Notch `v2.7.3` 设置](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/boringNotch/components/Settings/SettingsView.swift)、[窗口实现](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/boringNotch/components/Notch/BoringNotchSkyLightWindow.swift)、[Apple `NSWindow.SharingType`](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum?changes=_4) 与 [`.none` 说明](https://developer.apple.com/documentation/appkit/nswindow/sharingtype-swift.enum/none?language=objc)。
 
 ## Boring Notch 后续预发布源码（仅源码，不等于发行包）
 
@@ -89,6 +95,10 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 对照 Agent Notch 源码和回归用例，发现 Codex rollout 即使刚写入有效的活动事件，解析器仍只把 JSONL 事件时间交给生命周期裁决；时间戳过旧时，活跃会话会被 stale timeout 提前收尾。现在解析器只在本轮确实消费到活动生命周期记录时，才用该文件快照的真实修改时间刷新 `lastEvidenceAt`；无关 JSONL 写入和每秒轮询不会续命。任务开始时间与工具调用开始时间仍由事件时间决定，避免把旧回合伪装成新回合。Reducer 对仍运行的工具使用“工具开始时间与最新活动证据中的较新者”作为有界超时基准：没有新证据仍会在原有 60 分钟上限后结束，有新证据则不会仅因工具启动很早而误判空闲。
 
 新增用例覆盖陈旧事件时间配合新文件写入、无关行不得刷新活动，以及长时间工具调用遇到较新证据时保持 processing；Codex 原生解析和生命周期裁决两个测试套件共 `43 passed / 0 failed`，随后完整 macOS XCTest 共 `390 passed / 0 failed / 0 skipped`。这是本地 XCTest 证据，不等于 Codex GUI、真实长任务或桌面刘海状态切换验收。
+
+## 转录时间戳精度与生命周期边界
+
+继续检查 Claude 状态时序时发现，公共 ISO 8601 解析器只启用了小数秒选项，但同仓库的 Claude JSONL fixture 会生成合法的整秒格式。解析失败后旧代码用读取时的 `Date()` 替代源时间，导致旧转录可能被误当成当前事件。现在解析器同时接受有/无小数秒时间；缺失或损坏的时间戳仍可供聊天内容显示，但会标记为不可靠，并从 transcript 生命周期裁决中排除。新增目标用例 `3 passed / 0 failed`。完整 macOS XCTest 执行了 393 项：389 项通过，4 个用例失败（合计 5 条断言失败）；失败涉及 3 个 `ProcessExecutorTests` 的时限断言和 1 个 `SessionStoreWatcherRecoveryTests` 恢复等待超时。后者单独重跑 `1 passed / 0 failed`；单独重跑 ProcessExecutor 用例时 Xcode 在测试启动前停滞，随后中止，因此它们是否仅为并发负载波动仍未确认。完整结果属于本机 XCTest，不代表真实 Agent/GUI 验收。
 
 ## 对用户提供的旧风险审查的当前核验
 

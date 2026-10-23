@@ -24,6 +24,23 @@ struct ChatMessage: Identifiable, Equatable {
     let role: ChatRole
     let timestamp: Date
     let content: [MessageBlock]
+    /// A display timestamp may fall back to the parse time when source data is
+    /// malformed. Such a fallback must never be treated as lifecycle evidence.
+    let hasReliableTimestamp: Bool
+
+    nonisolated init(
+        id: String,
+        role: ChatRole,
+        timestamp: Date,
+        content: [MessageBlock],
+        hasReliableTimestamp: Bool = true
+    ) {
+        self.id = id
+        self.role = role
+        self.timestamp = timestamp
+        self.content = content
+        self.hasReliableTimestamp = hasReliableTimestamp
+    }
 
     static func == (lhs: ChatMessage, rhs: ChatMessage) -> Bool {
         lhs.id == rhs.id
