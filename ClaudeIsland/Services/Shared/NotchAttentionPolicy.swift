@@ -44,6 +44,31 @@ struct NotchFollowUpCandidate: Equatable, Sendable {
 }
 
 enum NotchAttentionPolicy {
+    static func completionDwellRemaining(
+        startedAt: Date,
+        duration: TimeInterval,
+        now: Date = Date()
+    ) -> TimeInterval {
+        max(0, startedAt.addingTimeInterval(duration).timeIntervalSince(now))
+    }
+
+    static func shouldAutoExpandOnCompletion(
+        expandOnTaskCompletion: Bool,
+        status: NotchStatus,
+        openReason: NotchOpenReason,
+        hasPendingAutoExpandedInteraction: Bool
+    ) -> Bool {
+        guard expandOnTaskCompletion,
+              !hasPendingAutoExpandedInteraction else {
+            return false
+        }
+
+        if status == .closed {
+            return true
+        }
+        return status == .opened && openReason == .notification
+    }
+
     static func shouldCollapseNotificationPanelAfterCompletion(
         status: NotchStatus,
         openReason: NotchOpenReason,

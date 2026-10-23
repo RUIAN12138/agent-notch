@@ -418,6 +418,22 @@ class NotchViewModel: ObservableObject {
         }
     }
 
+    /// Show the session list for an opted-in completion without taking over
+    /// a panel currently owned by the user's click, keyboard, or hover.
+    func showCompletionPanel() {
+        guard canPresentOnCurrentSpace(),
+              status != .opened || openReason == .notification else {
+            return
+        }
+        invalidatePointerTransition()
+        presentationGeneration += 1
+        openReason = .notification
+        status = .opened
+        currentChatSession = nil
+        compactApprovalSessionId = nil
+        contentType = .instances
+    }
+
     func notchClose() {
         invalidatePointerTransition()
         presentationGeneration += 1

@@ -214,6 +214,7 @@ final class NotchPreferences: ObservableObject {
         static let collapseDelay = "notchCollapseDelay"
         static let expandQuestionsAutomatically =
             "notchExpandQuestionsAutomatically"
+        static let expandOnTaskCompletion = "notchExpandOnTaskCompletion"
         static let completionCompactDuration = "notchCompletionCompactDuration"
         static let followUpRemindersEnabled = "notchFollowUpRemindersEnabled"
         static let followUpReminderDelay = "notchFollowUpReminderDelay"
@@ -269,6 +270,17 @@ final class NotchPreferences: ObservableObject {
             defaults.set(
                 expandQuestionsAutomatically,
                 forKey: Keys.expandQuestionsAutomatically
+            )
+        }
+    }
+
+    /// Task completion can optionally open the session list. This stays off
+    /// by default so compact completion attention remains non-disruptive.
+    @Published var expandOnTaskCompletion: Bool {
+        didSet {
+            defaults.set(
+                expandOnTaskCompletion,
+                forKey: Keys.expandOnTaskCompletion
             )
         }
     }
@@ -427,6 +439,9 @@ final class NotchPreferences: ObservableObject {
         expandQuestionsAutomatically =
             defaults.object(forKey: Keys.expandQuestionsAutomatically) as? Bool
             ?? true
+        expandOnTaskCompletion =
+            defaults.object(forKey: Keys.expandOnTaskCompletion) as? Bool
+            ?? false
         completionCompactDuration =
             defaults.object(forKey: Keys.completionCompactDuration) as? Double ?? 8
         followUpRemindersEnabled =

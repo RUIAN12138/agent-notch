@@ -713,6 +713,19 @@ struct NotchStudioSettingsView: View {
                 caption: t("Keep track of work that needs your attention.", "查看完成结果，以及仍在等待处理的请求。")
             )
             settingsCard {
+                settingToggle(
+                    t("Expand on task completion", "任务完成时展开"),
+                    detail: t(
+                        "Open the session panel for new task completions. Pending approvals and panels you opened stay in control.",
+                        "新任务完成时展开会话面板；待处理审批和你主动打开的面板保持优先。"
+                    ),
+                    isOn: $preferences.expandOnTaskCompletion
+                )
+                .accessibilityIdentifier(
+                    "settings.notifications.expandOnTaskCompletion"
+                )
+
+                Divider()
                 sliderRow(
                     title: t("Completion dwell", "完成后停留"),
                     value: $preferences.completionCompactDuration,
@@ -720,6 +733,10 @@ struct NotchStudioSettingsView: View {
                     step: 1,
                     valueText: "\(Int(preferences.completionCompactDuration))s"
                 )
+                .help(t(
+                    "How long completion reminders stay visible. Auto-expanded panels return to compact after this time unless you interact.",
+                    "控制完成提醒的停留时长；自动展开的面板会在此时间后收起，除非你已与面板交互。"
+                ))
 
                 Divider()
                 settingToggle(

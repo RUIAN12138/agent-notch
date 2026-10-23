@@ -1,7 +1,7 @@
 # 竞品逆向证据与 Agent Notch 决策记录
 
 审查日期：2026-10-23
-Agent Notch 基线：`main` / `32b4870`
+Agent Notch 基线：`main` / `dd0a291`
 范围：Vibe Island 1.0.54 官方 DMG、Boring Notch 2.7.3 官方 DMG，以及 Boring Notch `v2.7.3` 源码标签。
 
 ## 证据边界
@@ -12,16 +12,17 @@ Agent Notch 基线：`main` / `32b4870`
 
 | 对象 | 直接观察 | REA Evidence |
 | --- | --- | --- |
-| Vibe Island DMG | SHA-256 `2118d419e7ecbd8c9484cd4bc52bb6858610dac4e7f548cdf0763e6281be19e6`；完整清单 355 nodes / 376 occurrences / 360 edges；0 个完整性矛盾。 | `inspect_artifact` 本轮重查：`ev_2fd3ec2eadd9670dd32f46de9f0353b573e2055d12ff1905ef324fecb5242678`；inventory: `ev_b92df0db220721a97272bf4f18894812fc945c3adea69d57be28f799e60f129c`；资源页：`ev_fff3bbe96ebb3f9c87d99200087a0498278c484f4cae7611e811e84dea8afd8` |
+| Vibe Island DMG | SHA-256 `2118d419e7ecbd8c9484cd4bc52bb6858610dac4e7f548cdf0763e6281be19e6`；完整清单 355 nodes / 376 occurrences / 360 edges；0 个完整性矛盾。本轮按用户选择再次只读检查，哈希与前次一致。 | `inspect_artifact`：`ev_2fd3ec2eadd9670dd32f46de9f0353b573e2055d12ff1905ef324fecb5242678`、`ev_4d624609ce9e97ef007cb73da2fd4bf25c8b9b7794a2ca81e497d9f7c130819e`；inventory: `ev_b92df0db220721a97272bf4f18894812fc945c3adea69d57be28f799e60f129c`、`ev_ac1faa260c5b4e7ddf9554877f19304779b097258419a1e70a511a7c847c9289`；前次资源页：`ev_fff3bbe96ebb3f9c87d99200087a0498278c484f4cae7611e811e84dea8afd8` |
 | Vibe Island 主程序 | `vibe-island`，arm64 Mach-O；二进制 SHA-256 `3023bc09dff55329a19fdb09d6a3c76227159a0dcaa8f656ca04f4ae941bd2f4`。REA 报告 73 个 load commands、54 个依赖、3,519 个已返回 imports；imports 不完整，不能据此证明缺少其他符号。 | Mach-O: `ev_4c8cdef3f048a544d8a785375d9e252125d6b654b50d345c52782124d559a3c1`；summary view: `ev_284f40ac10de2f9565274cd96bf3167d9b7933b686db17e4cd5e885e7d1de786` |
 | Vibe Island 原生派发元数据 | 对 arm64 主程序尝试 REA `inspect_native_dispatch_metadata`；读取器因 `objc_ivars` 第 46、48 项名称为空而失败，未产生可保留的 Evidence。该失败只说明当前读取器无法继续，不证明应用自身有缺陷；本机没有可用 Hopper/Ghidra 反编译提供器。 | REA 6.5.0 的执行错误诊断；无 Evidence ID |
-| Vibe Island `Info.plist` | 版本 `1.0.54`，Bundle ID `app.vibeisland.macos`，构建提交字段 `c239e829231c`；声明启用用量功能，并声明 Apple Events 用途是跳转至终端正确的窗口、标签页和会话。这些是包内声明，不是运行行为证明。 | `ev_c26a3fc6c573ef66fea89099cce06bd0fb736c9c57e19728f903e2a3ef196a26` |
+| Vibe Island `Info.plist` | 版本 `1.0.54`，Bundle ID `app.vibeisland.macos`，构建提交字段 `c239e829231c`；声明启用用量功能、Apple Events 用途及 Sparkle 自动更新。均为包内声明，不是运行行为证明。 | `ev_c26a3fc6c573ef66fea89099cce06bd0fb736c9c57e19728f903e2a3ef196a26`、`ev_bc51bacf08ededa66dda128370432483f9746d50ed3573cace4dba2604e79e47` |
+| Vibe Island 简体中文设置资源 | `zh-Hans.lproj/Localizable.strings` 中含有完成通知自动展开、问题到达时展开、Team 队友完成时展开、悬停延迟、全屏隐藏、空闲自动隐藏及完成停留时长等文案。关闭完成自动展开时的帮助文案描述为仅在刘海保留轻提示；Team 完成设置帮助文案明确写着默认关闭。资源文案不能单独证明设置实际接入了状态机或其运行效果。 | `inspect_plist`: `ev_28b3fbaad320405079e7b244b28417a3c315ebb5ac80873a3e72c30c840c10ea` |
 | Vibe Island RemoteAgent manifest | 包内存在 schema v2 清单：远程 Agent 协议 `1.12.0`，覆盖 darwin/linux/freebsd 的 amd64/arm64，并列出每个资产的 SHA-256。REA 将文件识别为已验证的 2,261-byte 资源；清单本身是否有独立签名、应用如何验证和执行它，仍未知。 | inventory occurrence `art_de34ec5479366b67bdaea3124dcbc6cf188700ef1b587433e363b9dccfc9c166`；父 inventory `ev_e209a4be37f6f277738b5d7da78f5f22063ac15c32b6a3c2fccf0a025469d282` |
 | Vibe Island 用量价格数据 | 包内另有 17,446-byte `usage-pricing.json`，顶层键包括 `models`、`aliases`、`schemaVersion`、`source` 和 `syncedAt`。本轮只确认资源存在及 schema 顶层，未校验单价、更新来源或 UI 使用路径。 | inventory occurrence `art_a953d29db95b76658e25c92eab9e58acf6f39ce099465653db3030d4df706f61`；父 inventory同上 |
 | Boring Notch DMG | SHA-256 `23786382548d33c59b309db558e513a92e3f95b63d611544dcddf5d196e46698`；完整清单 229 nodes / 249 occurrences / 236 edges；0 个完整性矛盾。 | `inspect_artifact` 本轮重查：`ev_c53bd004dbd0660eae2ad30203d9d4213fb1f7f2796494cbcd646b21710eebe0`；inventory: `ev_451f56e7de5b1c371b241af2a5c195898f4be2f3d92a6c56de2aa4a788208033`；当前会话的清单汇总：`ev_f1a611572a604f6b3f88ccef988548996b5b45e1976c2669b3c0084495893bb0` |
 | Boring Notch 主程序 | 发行包标记为 `2.7.3`；arm64 Mach-O SHA-256 `f136e7334c4c197c9d0fbdcbb0d95649771ed7427bcf361b28aa76af03ed3900`。REA 静态读取 75 个 load commands、57 个依赖；imports 非穷尽。派发元数据读取到 174 个 Objective-C class 记录和 113 个派发实现，但整体覆盖仍为 partial。 | Info.plist: `ev_07126bfb88575ccce59ce775049df9668e96c48b473317a8e74dbebda364817d`；Mach-O: `ev_7a890069c239ac1ebb58f5727a28ebb1fc88577d4cb3d606bb4b0ba77a56390c`；dispatch: `ev_3ef795e325685c37f257a42577a014acc75751fc7212bfbe4a2fc85c3b963756` |
 
-Vibe Island 资源 occurrence 的完整逻辑路径为 `VibeIsland.dmg/Vibe Island/Vibe Island.app/Contents/Resources/RemoteAgent/manifest.json` 和 `.../usage-pricing.json`。DMG 在只读挂载后检查；没有执行其中的程序，也没有访问清单 URL。
+Vibe Island 资源 occurrence 的完整逻辑路径为 `VibeIsland.dmg/Vibe Island/Vibe Island.app/Contents/Resources/RemoteAgent/manifest.json` 和 `.../usage-pricing.json`。本轮 REA 直接检查 DMG 获得完整清单；由于 REA 的 DMG 解包器不支持该格式，随后只读挂载以解析 `Info.plist` 和简体中文 `.strings`。没有执行其中的程序，也没有访问清单 URL。REA 6.5.0 的 `analyze_swift_types` 因没有配置 Ghidra/Hopper/IDA provider 返回 `provider_unavailable`，未生成符号证据；本轮不安装分析器、不绕过此限制。
 
 ## Boring Notch 源码观察与可迁移点
 
@@ -33,7 +34,7 @@ Vibe Island 资源 occurrence 的完整逻辑路径为 `VibeIsland.dmg/Vibe Isla
 
 ## 当前版本包与启动边界（2026-10-23）
 
-本轮再次校验两份 DMG 的 SHA-256 与上表一致，并只读挂载检查应用包；完成后已卸载。由于用户要求不触发更新/下载、不绕过系统安全设置，本轮没有启动任何竞品，因此以下是包内字符串、配置和源码的静态观察，不是实际 UI 或运行行为。
+本轮再次校验两份 DMG 的 SHA-256 与上表一致，并只读挂载检查应用包；完成后已卸载。用户本轮选择“仅静态分析”，且要求不触发更新/下载、不绕过系统安全设置，因此没有启动任何竞品；以下均为包内字符串、配置和源码观察，不是实际 UI 或运行行为。
 
 - Vibe Island 包内信息为 `1.0.54` / `app.vibeisland.macos`。`Info.plist` 声明 `SUAutomaticallyUpdate = true` 并配置 Sparkle feed；启动可能发起更新检查或下载，因此未启动。
 - Boring Notch 的 `spctl --assess --type execute` 返回 `rejected`。其上游 README 说明首次运行需在“系统设置 → 隐私与安全性”手动“仍要打开”；本轮没有移除隔离标记、修改 Gatekeeper 或绕过该提示，未启动该应用。
@@ -46,6 +47,14 @@ Vibe Island 资源 occurrence 的完整逻辑路径为 `VibeIsland.dmg/Vibe Isla
 源码复核发现，`handleWaitingForInputChange` 在任一新完成事件到达时会关闭所有 `.notification` 所有权的展开面板；而 `showApproval(for:)` 也用 `.notification` 打开审批卡片。因此，一个无关会话完成时，仍待处理的审批也会被收起，属于真实的触发优先级冲突。新增回归测试先按旧策略复现为 14 项中 1 项失败。
 
 修复后，完成事件仅在没有仍需自动展开的权限/问题交互时收起陈旧通知面板。判定复用 `shouldAutoExpandInteraction`：普通审批和计划审查会保护展开态；关闭“问题自动展开”时，`AskUserQuestion` 不会错误阻止收起；用户手动打开的面板仍不被完成事件接管。此改动只通过托管单元测试，不代表真实 UI 验收。
+
+## 完成通知自动展开：静态线索与本地实现
+
+Vibe Island 的简体中文资源明确区分“完成时自动展开”和“Team 队友完成时自动展开”，并为完成通知提供展开停留时长。它们是设置资源观察；由于本轮按用户选择只做静态分析，没有把这些文案当作真实 UI 或状态机行为证据。
+
+Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开启后，仅新的、处于当前提醒时限内且未匹配静音规则的完成事件可以打开会话列表；待处理且具有自动展开资格的审批/问题优先，用户已打开的点击/键盘/悬停面板不被接管，并继续使用现有全屏空间准入检查。自动展开面板在剩余完成停留时长后收起；如果用户在面板内交互（所有权转为 click），或出现待处理的自动展开交互，则不会被计时器收起。关闭该选项时仍保持原来的紧凑完成提醒行为。
+
+这项是基于竞品设置文案做出的 Agent Notch 产品决策，不是对 Vibe Island 私有实现的复刻结论。新增测试覆盖默认值与持久化、打开策略/所有权边界、全屏空间拒绝，以及延迟到达时仍从真实 `completedAt` 计算停留时间。
 
 ## 对用户提供的旧风险审查的当前核验
 
@@ -63,10 +72,13 @@ Vibe Island 资源 occurrence 的完整逻辑路径为 `VibeIsland.dmg/Vibe Isla
 
 本轮在完成/审批优先级修复后运行上述两个套件：28 passed、0 failed。新增用例覆盖通知所有权、仍待处理的审批、可配置的普通问题，以及用户主动打开面板的边界；这是 policy/UI wiring 的测试，不是 macOS 桌面端到端验收。
 
+本轮新增完成时自动展开与停留策略后，运行 `NotchCompletionExpansionTests`、`NotchPresentationTimingTests`、`NotchPointerInteractionTests` 和 `NotchFullScreenTests`：34 passed、0 failed、0 skipped。该结果覆盖偏好、策略、全屏准入与相关状态逻辑；仍不是已安装应用的真实桌面端到端验收。
+
 ## 采用、暂缓与未验证项
 
 - **已采用**：Boring Notch 的可撤销 hover 时序原则已独立实现；其 0.3 秒进入等待和 100ms 退出复核启发了 Agent Notch 的新默认值（0.3 秒进入、0.2 秒退出），同时保留 Agent Notch 自己的指针代次防竞态与扩大后的几何命中边界。
 - **已修复**：完成事件不再误收起仍有自动展开资格的审批/提问面板；依据是 Agent Notch 源码复现与回归测试，不声称这是 Vibe Island 私有实现的逆向结论。
+- **新增可选策略**：Vibe Island 安装包静态资源展示完成事件自动展开及 dwell 文案；Agent Notch 新增默认关闭的完成时展开设置，并复用既有完成停留时长自动收起，保留审批、用户所有权和全屏策略优先级。
 - **候选但暂缓**：Vibe Island 的平台化 RemoteAgent manifest 与版本/散列清单可作为未来分发设计参考；当前不引入 SSH/远程执行能力，避免在核心状态与审批可靠性尚需真实运行验收时扩张权限面。
 - **暂不采用**：Vibe Island 的价格数据资源；Agent Notch 已有订阅用量与会话 token 数据，但没有经过验证的跨模型成本口径，本轮也不扩展该功能。
 - **未验证**：Vibe Island 的真实展开/收起、Agent 状态与审批交互。REA residual unknown `unk_055a4d687c6b84aff4d6bfdb2cc58b8da51794c7c245ccb8d34ed25647e99186` 要求 controlled replay；后续若要启动竞品 app，须在动作时确认，并避免登录、授权系统控制、触发终端控制或远程资产下载。

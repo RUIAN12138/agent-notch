@@ -45,6 +45,9 @@ private final class NotchDelayedUIWork: ObservableObject {
     var visibilityTask: Task<Void, Never>?
     var bounceTask: Task<Void, Never>?
     var completionSoundTask: Task<Void, Never>?
+    var completionPanelCollapseTask: Task<Void, Never>?
+    var completionPanelCollapseToken: NotchCompletionToken?
+    var completionPanelCollapseGeneration: UInt64 = 0
     var followUpDeliveryTask: Task<Void, Never>?
     var completionVisibilityTasks: [String: Task<Void, Never>] = [:]
 
@@ -55,6 +58,10 @@ private final class NotchDelayedUIWork: ObservableObject {
         bounceTask = nil
         completionSoundTask?.cancel()
         completionSoundTask = nil
+        completionPanelCollapseTask?.cancel()
+        completionPanelCollapseTask = nil
+        completionPanelCollapseToken = nil
+        completionPanelCollapseGeneration &+= 1
         followUpDeliveryTask?.cancel()
         followUpDeliveryTask = nil
         completionVisibilityTasks.values.forEach { $0.cancel() }
@@ -383,6 +390,7 @@ struct NotchView: View {
         }
         .onChange(of: preferences.completionCompactDuration) { _, _ in
             rescheduleCompletionVisibilityExpiries()
+            rescheduleCompletionPanelCollapse()
         }
         .onChange(of: preferences.followUpRemindersEnabled) { _, _ in
             reconcileFollowUpReminders(sessionMonitor.instances)
@@ -1018,13 +1026,32 @@ struct NotchView: View {
                     expandQuestionsAutomatically:
                         preferences.expandQuestionsAutomatically
                 )
-            if NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
+            let shouldExpandForCompletion =
+                NotchAttentionPolicy.shouldAutoExpandOnCompletion(
+                    expandOnTaskCompletion:
+                        preferences.expandOnTaskCompletion,
+                    status: viewModel.status,
+                    openReason: viewModel.openReason,
+                    hasPendingAutoExpandedInteraction:
+                        hasPendingAutoExpandedInteraction
+                )
+            if shouldExpandForCompletion {
+                viewModel.showCompletionPanel()
+                if viewModel.status == .opened,
+                   viewModel.openReason == .notification,
+                   let latestCompletion = presentableTokens.max(by: {
+                       $0.completedAt < $1.completedAt
+                   }) {
+                    scheduleCompletionPanelCollapse(after: latestCompletion)
+                }
+            } else if NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
                 status: viewModel.status,
                 openReason: viewModel.openReason,
                 hasPendingAutoExpandedInteraction:
                     hasPendingAutoExpandedInteraction
             ) {
                 viewModel.notchClose()
+                cancelCompletionPanelCollapse()
             }
 
             // Get the sessions that just entered waitingForInput
@@ -1077,11 +1104,9 @@ struct NotchView: View {
         displayStartedAt: Date
     ) {
         delayedUIWork.completionVisibilityTasks[sessionId]?.cancel()
-        let remaining = max(
-            0,
-            displayStartedAt.addingTimeInterval(
-                preferences.completionCompactDuration
-            ).timeIntervalSinceNow
+        let remaining = NotchAttentionPolicy.completionDwellRemaining(
+            startedAt: displayStartedAt,
+            duration: preferences.completionCompactDuration
         )
         delayedUIWork.completionVisibilityTasks[sessionId] = Task { @MainActor in
             try? await Task.sleep(for: .seconds(remaining))
@@ -1100,6 +1125,58 @@ struct NotchView: View {
             handleProcessingChange()
             updateIdleVisibility()
         }
+    }
+
+    private func scheduleCompletionPanelCollapse(
+        after token: NotchCompletionToken
+    ) {
+        delayedUIWork.completionPanelCollapseTask?.cancel()
+        delayedUIWork.completionPanelCollapseGeneration &+= 1
+        let generation = delayedUIWork.completionPanelCollapseGeneration
+        delayedUIWork.completionPanelCollapseToken = token
+        let remaining = NotchAttentionPolicy.completionDwellRemaining(
+            startedAt: token.completedAt,
+            duration: preferences.completionCompactDuration
+        )
+        delayedUIWork.completionPanelCollapseTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(remaining))
+            guard !Task.isCancelled,
+                  delayedUIWork.completionPanelCollapseGeneration == generation
+            else {
+                return
+            }
+
+            delayedUIWork.completionPanelCollapseTask = nil
+            delayedUIWork.completionPanelCollapseToken = nil
+            let hasPendingAutoExpandedInteraction =
+                NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
+                    in: sessionMonitor.instances,
+                    expandQuestionsAutomatically:
+                        preferences.expandQuestionsAutomatically
+                )
+            if NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
+                status: viewModel.status,
+                openReason: viewModel.openReason,
+                hasPendingAutoExpandedInteraction:
+                    hasPendingAutoExpandedInteraction
+            ) {
+                viewModel.notchClose()
+            }
+        }
+    }
+
+    private func rescheduleCompletionPanelCollapse() {
+        guard let token = delayedUIWork.completionPanelCollapseToken else {
+            return
+        }
+        scheduleCompletionPanelCollapse(after: token)
+    }
+
+    private func cancelCompletionPanelCollapse() {
+        delayedUIWork.completionPanelCollapseTask?.cancel()
+        delayedUIWork.completionPanelCollapseTask = nil
+        delayedUIWork.completionPanelCollapseToken = nil
+        delayedUIWork.completionPanelCollapseGeneration &+= 1
     }
 
     private func rescheduleCompletionVisibilityExpiries() {
