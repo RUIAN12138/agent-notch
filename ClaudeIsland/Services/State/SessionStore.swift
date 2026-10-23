@@ -2060,8 +2060,12 @@ actor SessionStore {
         let now = Date()
 
         let discoveryStartedAt = Date()
+        let codexDiscoveryWindow = max(
+            codexActiveStaleInterval,
+            LifecycleReducer.codexToolExecutionStaleInterval
+        )
         let discoveryThreshold = lastCodexDiscoverySweepAt ??
-            now.addingTimeInterval(-codexActiveStaleInterval)
+            now.addingTimeInterval(-codexDiscoveryWindow)
         let discoveredCodexTasks = await conversationParser
             .discoverCodexTasks(modifiedAfter: discoveryThreshold)
         guard !Task.isCancelled else { return }
@@ -2560,12 +2564,24 @@ actor SessionStore {
             }
             let restoredPhase: SessionPhase
             let lifecycleStartsNewerTurn: Bool
-            if case .active(let turnStartedAt, _) = codexLifecycle,
-               let turnStartedAt {
-                lifecycleStartsNewerTurn = item.completedAt.map {
-                    turnStartedAt > $0
+            let activeTurnStartedAt: Date?
+            let activeToolStartedAt: Date?
+            switch codexLifecycle {
+            case .active(let turnStartedAt, _):
+                activeTurnStartedAt = turnStartedAt
+                activeToolStartedAt = nil
+                lifecycleStartsNewerTurn = turnStartedAt.map { startedAt in
+                    item.completedAt.map { startedAt > $0 } ?? true
+                } ?? false
+            case .activeTool(let turnStartedAt, _, let toolStartedAt):
+                activeTurnStartedAt = turnStartedAt
+                activeToolStartedAt = toolStartedAt
+                lifecycleStartsNewerTurn = item.lastHookEventAt.map {
+                    toolStartedAt > $0
                 } ?? true
-            } else {
+            case .completed, .missing, .unknown:
+                activeTurnStartedAt = nil
+                activeToolStartedAt = nil
                 lifecycleStartsNewerTurn = false
             }
             if lifecycleStartsNewerTurn {
@@ -2609,7 +2625,11 @@ actor SessionStore {
                 lastActivity: item.lastActivity,
                 createdAt: item.createdAt,
                 lastHookEventAt: item.lastHookEventAt,
-                lastCodexTurnStartedAt: item.lastCodexTurnStartedAt,
+                lastCodexTurnStartedAt: activeTurnStartedAt ??
+                    item.lastCodexTurnStartedAt,
+                codexToolExecutionStartedAt: lifecycleStartsNewerTurn
+                    ? activeToolStartedAt
+                    : nil,
                 completedAt: lifecycleStartsNewerTurn
                     ? nil
                     : lifecycleCompletion

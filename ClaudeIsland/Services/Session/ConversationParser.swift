@@ -134,6 +134,14 @@ nonisolated enum CodexTaskLifecycle: Equatable, Sendable {
     /// such as token counts may advance `lastEvidenceAt`, but must never make
     /// an already completed turn look like a newly started one.
     case active(turnStartedAt: Date?, lastEvidenceAt: Date?)
+    /// An execution call was persisted without its matching result. The call
+    /// timestamp is separate from ordinary message evidence so a long-running
+    /// tool can survive a cold start without making quiet turns immortal.
+    case activeTool(
+        turnStartedAt: Date?,
+        lastEvidenceAt: Date?,
+        toolStartedAt: Date
+    )
     case completed(Date?)
     case missing
     case unknown
@@ -248,6 +256,7 @@ actor ConversationParser {
         var lifecycle: CodexTaskLifecycle = .unknown
         var turnStartedAt: Date?
         var lastEvidenceAt: Date?
+        var pendingToolStartedAt: [String: Date] = [:]
         var pending = Data()
         /// Last bytes immediately preceding `readOffset`. This cheap anchor
         /// detects a truncate-and-regrow that happens between two status polls.
@@ -260,6 +269,7 @@ actor ConversationParser {
         /// limit, stream past it without retaining any more bytes until LF.
         var discardingCurrentLine = false
         var currentLineIsEventMessage = false
+        var currentLineIsResponseItem = false
     }
 
     /// Parsed tool result data
@@ -852,14 +862,15 @@ actor ConversationParser {
     private nonisolated static let codexLifecycleTailBudget: UInt64 = 1_048_576
     private nonisolated static let codexLifecycleReadChunkSize = 256 * 1_024
     private nonisolated static let codexLifecycleAnchorSize = 64
-    /// Lifecycle event rows are normally a few hundred bytes. Four MiB leaves
-    /// generous room for a large final answer while making a malformed or
-    /// unexpectedly huge event row safe to ignore until its terminating LF.
-    private nonisolated static let codexLifecycleMaxEventRowSize =
+    /// Lifecycle rows are normally small. Four MiB leaves generous room for a
+    /// large final answer or tool call while keeping malformed/huge rows
+    /// bounded until their terminating LF.
+    private nonisolated static let codexLifecycleMaxRelevantRowSize =
         4 * 1_024 * 1_024
 
     private enum CodexLifecycleLineClassification {
         case eventMessage
+        case responseItem
         case irrelevant
         case incomplete
     }
@@ -885,6 +896,7 @@ actor ConversationParser {
         }
 
         let eventMessageNeedle = Data("\"type\":\"event_msg\"".utf8)
+        let responseItemNeedle = Data("\"type\":\"response_item\"".utf8)
         let boundaryNeedles = [
             "\"task_started\"",
             "\"task_complete\"",
@@ -910,8 +922,12 @@ actor ConversationParser {
             let lineStart = precedingNewline
                 .map { data.index(after: $0) } ?? data.startIndex
             let line = data[lineStart..<lineEnd]
-            if line.count <= codexLifecycleMaxEventRowSize,
-               line.range(of: eventMessageNeedle) != nil,
+            let isLifecycleCandidate =
+                line.range(of: eventMessageNeedle) != nil ||
+                (line.range(of: responseItemNeedle) != nil &&
+                 line.range(of: Data("\"final_answer\"".utf8)) != nil)
+            if line.count <= codexLifecycleMaxRelevantRowSize,
+               isLifecycleCandidate,
                boundaryNeedles.contains(where: {
                    line.range(of: $0) != nil
                }),
@@ -932,6 +948,12 @@ actor ConversationParser {
     nonisolated private static func isCodexLifecycleBoundary(
         _ row: [String: Any]
     ) -> Bool {
+        if row["type"] as? String == "response_item",
+           let payload = row["payload"] as? [String: Any] {
+            return payload["type"] as? String == "message" &&
+                payload["role"] as? String == "assistant" &&
+                payload["phase"] as? String == "final_answer"
+        }
         guard row["type"] as? String == "event_msg",
               let payload = row["payload"] as? [String: Any],
               let type = payload["type"] as? String else {
@@ -1002,21 +1024,36 @@ actor ConversationParser {
                 from: cursor,
                 to: segmentEnd
             )
-            let available = codexLifecycleMaxEventRowSize -
+            let available = codexLifecycleMaxRelevantRowSize -
                 state.pending.count
 
             if segmentCount > available {
-                // Do not append beyond the hard cap. The remainder of this row
-                // is irrelevant to lifecycle state even if its JSON is valid.
+                // Do not append beyond the hard cap. An oversized result may
+                // close a pending tool, so forget that marker rather than
+                // leaving a false-running session indefinitely.
+                if state.currentLineIsResponseItem {
+                    state.pendingToolStartedAt.removeAll()
+                    if case .activeTool(let turnStartedAt, let lastEvidenceAt, _) =
+                        state.lifecycle {
+                        state.lifecycle = .active(
+                            turnStartedAt: turnStartedAt,
+                            lastEvidenceAt: lastEvidenceAt
+                        )
+                    }
+                }
                 state.pending.removeAll(keepingCapacity: false)
                 state.currentLineIsEventMessage = false
+                state.currentLineIsResponseItem = false
                 state.discardingCurrentLine = newline == nil
             } else {
                 state.pending.append(contentsOf: data[cursor..<segmentEnd])
-                if !state.currentLineIsEventMessage {
+                if !state.currentLineIsEventMessage &&
+                    !state.currentLineIsResponseItem {
                     switch classifyCodexLifecycleLine(state.pending) {
                     case .eventMessage:
                         state.currentLineIsEventMessage = true
+                    case .responseItem:
+                        state.currentLineIsResponseItem = true
                     case .irrelevant:
                         state.pending.removeAll(keepingCapacity: false)
                         state.discardingCurrentLine = newline == nil
@@ -1026,7 +1063,8 @@ actor ConversationParser {
                 }
 
                 if newline != nil,
-                   state.currentLineIsEventMessage,
+                   (state.currentLineIsEventMessage ||
+                    state.currentLineIsResponseItem),
                    let row = try? JSONSerialization.jsonObject(
                     with: state.pending
                    ) as? [String: Any] {
@@ -1046,11 +1084,12 @@ actor ConversationParser {
         state.pending.removeAll(keepingCapacity: true)
         state.discardingCurrentLine = false
         state.currentLineIsEventMessage = false
+        state.currentLineIsResponseItem = false
     }
 
     /// Parse just enough of a JSON object to classify its top-level `type`.
     /// This avoids substring false positives from nested payloads and lets
-    /// response_item/context rows be released after their first read chunk.
+    /// irrelevant response/context rows be released after their first chunk.
     nonisolated private static func classifyCodexLifecycleLine(
         _ data: Data
     ) -> CodexLifecycleLineClassification {
@@ -1107,7 +1146,11 @@ actor ConversationParser {
                     let isEvent = valueRange.map {
                         data[$0].elementsEqual("event_msg".utf8)
                     } ?? false
-                    return isEvent ? .eventMessage : .irrelevant
+                    if isEvent { return .eventMessage }
+                    let isResponseItem = valueRange.map {
+                        data[$0].elementsEqual("response_item".utf8)
+                    } ?? false
+                    return isResponseItem ? .responseItem : .irrelevant
                 }
             }
 
@@ -1239,6 +1282,10 @@ actor ConversationParser {
         _ row: [String: Any],
         state: inout CodexLifecycleParseState
     ) {
+        if row["type"] as? String == "response_item" {
+            applyCodexResponseItemRow(row, state: &state)
+            return
+        }
         guard row["type"] as? String == "event_msg",
               let payload = row["payload"] as? [String: Any],
               let type = payload["type"] as? String else {
@@ -1247,19 +1294,30 @@ actor ConversationParser {
 
         let timestamp = (row["timestamp"] as? String)
             .flatMap(parseISO8601)
+        if type == "item_completed",
+           let item = payload["item"] as? [String: Any] {
+            let itemType = item["type"] as? String
+            let isToolItem = [
+                "CommandExecution", "command_execution",
+                "McpToolCall", "mcp_tool_call",
+                "DynamicToolCall", "dynamic_tool_call",
+                "FunctionCallOutput", "function_call_output"
+            ].contains(itemType ?? "")
+            if isToolItem, let timestamp {
+                removeCodexToolCall(
+                    ids: [item["call_id"] as? String, item["id"] as? String]
+                        .compactMap { $0 },
+                    completedAt: timestamp,
+                    state: &state
+                )
+            }
+            return
+        }
         if type == "token_count" {
             // A token count immediately after an abort is not proof of a new
             // turn. It only refreshes evidence for an already-active turn.
-            if case .active = state.lifecycle,
-               let timestamp {
-                state.lastEvidenceAt = max(
-                    state.lastEvidenceAt ?? .distantPast,
-                    timestamp
-                )
-                state.lifecycle = .active(
-                    turnStartedAt: state.turnStartedAt,
-                    lastEvidenceAt: state.lastEvidenceAt
-                )
+            if let timestamp {
+                refreshCodexActiveEvidence(at: timestamp, state: &state)
             }
             return
         }
@@ -1267,12 +1325,14 @@ actor ConversationParser {
         if type == "agent_message",
            payload["phase"] as? String == "final_answer" {
             // Codex renders the final response shortly before task_complete.
+            state.pendingToolStartedAt.removeAll()
             state.lifecycle = .completed(timestamp)
             return
         }
 
         switch type {
         case "task_started":
+            state.pendingToolStartedAt.removeAll()
             state.turnStartedAt = timestamp
             state.lastEvidenceAt = timestamp
             state.lifecycle = .active(
@@ -1280,7 +1340,7 @@ actor ConversationParser {
                 lastEvidenceAt: timestamp
             )
         case "user_message":
-            if case .active = state.lifecycle {
+            if isCodexTurnActive(state.lifecycle) {
                 state.lastEvidenceAt = max(
                     state.lastEvidenceAt ?? .distantPast,
                     timestamp ?? .distantPast
@@ -1289,13 +1349,17 @@ actor ConversationParser {
                 state.turnStartedAt = timestamp
                 state.lastEvidenceAt = timestamp
             }
-            state.lifecycle = .active(
-                turnStartedAt: state.turnStartedAt,
-                lastEvidenceAt: state.lastEvidenceAt
-            )
+            if let timestamp {
+                refreshCodexActiveEvidence(at: timestamp, state: &state)
+            } else {
+                refreshCodexToolLifecycle(
+                    at: state.lastEvidenceAt ?? .distantPast,
+                    state: &state
+                )
+            }
         case "agent_message"
             where payload["phase"] as? String == "commentary":
-            if case .active = state.lifecycle {
+            if isCodexTurnActive(state.lifecycle) {
                 state.lastEvidenceAt = max(
                     state.lastEvidenceAt ?? .distantPast,
                     timestamp ?? .distantPast
@@ -1308,10 +1372,14 @@ actor ConversationParser {
                 state.turnStartedAt = timestamp
                 state.lastEvidenceAt = timestamp
             }
-            state.lifecycle = .active(
-                turnStartedAt: state.turnStartedAt,
-                lastEvidenceAt: state.lastEvidenceAt
-            )
+            if let timestamp {
+                refreshCodexActiveEvidence(at: timestamp, state: &state)
+            } else {
+                refreshCodexToolLifecycle(
+                    at: state.lastEvidenceAt ?? .distantPast,
+                    state: &state
+                )
+            }
         case "task_complete",
              "turn_aborted",
              "task_aborted",
@@ -1322,10 +1390,175 @@ actor ConversationParser {
              "task_failed",
              "turn_failed",
              "thread_rolled_back":
+            state.pendingToolStartedAt.removeAll()
             state.lifecycle = .completed(timestamp)
         default:
             break
         }
+    }
+
+    nonisolated private static func applyCodexResponseItemRow(
+        _ row: [String: Any],
+        state: inout CodexLifecycleParseState
+    ) {
+        guard let payload = row["payload"] as? [String: Any],
+              let type = payload["type"] as? String else {
+            return
+        }
+        let timestamp = (row["timestamp"] as? String)
+            .flatMap(parseISO8601)
+
+        if type == "message",
+           payload["role"] as? String == "assistant",
+           payload["phase"] as? String == "final_answer" {
+            state.pendingToolStartedAt.removeAll()
+            state.lifecycle = .completed(timestamp)
+            return
+        }
+        guard let timestamp,
+              !isCodexLifecycleCompleted(state.lifecycle) else {
+            return
+        }
+
+        let callID = (payload["call_id"] as? String)
+            ?? (payload["id"] as? String)
+        switch type {
+        case "local_shell_call":
+            guard let callID, !callID.isEmpty else { return }
+            switch payload["status"] as? String {
+            case "in_progress":
+                state.pendingToolStartedAt[callID] = timestamp
+                refreshCodexToolLifecycle(at: timestamp, state: &state)
+            case "completed":
+                removeCodexToolCall(
+                    ids: [callID],
+                    completedAt: timestamp,
+                    state: &state
+                )
+            default:
+                break
+            }
+
+        case "function_call", "custom_tool_call":
+            guard let callID, !callID.isEmpty else { return }
+            state.pendingToolStartedAt[callID] = timestamp
+            refreshCodexToolLifecycle(at: timestamp, state: &state)
+
+        case "tool_search_call":
+            guard payload["status"] as? String == "in_progress",
+                  let callID, !callID.isEmpty else {
+                return
+            }
+            state.pendingToolStartedAt[callID] = timestamp
+            refreshCodexToolLifecycle(at: timestamp, state: &state)
+
+        case "web_search_call":
+            guard let callID, !callID.isEmpty else { return }
+            switch payload["status"] as? String {
+            case "in_progress":
+                state.pendingToolStartedAt[callID] = timestamp
+                refreshCodexToolLifecycle(at: timestamp, state: &state)
+            case "completed":
+                removeCodexToolCall(
+                    ids: [callID],
+                    completedAt: timestamp,
+                    state: &state
+                )
+            default:
+                break
+            }
+
+        case "function_call_output", "custom_tool_call_output",
+             "mcp_tool_call_output", "tool_search_output":
+            guard let callID, !callID.isEmpty else { return }
+            removeCodexToolCall(
+                ids: [callID],
+                completedAt: timestamp,
+                state: &state
+            )
+
+        default:
+            break
+        }
+    }
+
+    nonisolated private static func isCodexTurnActive(
+        _ lifecycle: CodexTaskLifecycle
+    ) -> Bool {
+        switch lifecycle {
+        case .active, .activeTool:
+            return true
+        case .completed, .missing, .unknown:
+            return false
+        }
+    }
+
+    nonisolated private static func isCodexLifecycleCompleted(
+        _ lifecycle: CodexTaskLifecycle
+    ) -> Bool {
+        if case .completed = lifecycle { return true }
+        return false
+    }
+
+    nonisolated private static func refreshCodexToolLifecycle(
+        at timestamp: Date,
+        state: inout CodexLifecycleParseState
+    ) {
+        state.lastEvidenceAt = max(
+            state.lastEvidenceAt ?? .distantPast,
+            timestamp
+        )
+        guard let toolStartedAt = state.pendingToolStartedAt.values.min() else {
+            state.lifecycle = .active(
+                turnStartedAt: state.turnStartedAt,
+                lastEvidenceAt: state.lastEvidenceAt
+            )
+            return
+        }
+        if state.turnStartedAt == nil {
+            state.turnStartedAt = timestamp
+        }
+        state.lifecycle = .activeTool(
+            turnStartedAt: state.turnStartedAt,
+            lastEvidenceAt: state.lastEvidenceAt,
+            toolStartedAt: toolStartedAt
+        )
+    }
+
+    nonisolated private static func refreshCodexActiveEvidence(
+        at timestamp: Date,
+        state: inout CodexLifecycleParseState
+    ) {
+        guard isCodexTurnActive(state.lifecycle) else { return }
+        state.lastEvidenceAt = max(
+            state.lastEvidenceAt ?? .distantPast,
+            timestamp
+        )
+        if let toolStartedAt = state.pendingToolStartedAt.values.min() {
+            state.lifecycle = .activeTool(
+                turnStartedAt: state.turnStartedAt,
+                lastEvidenceAt: state.lastEvidenceAt,
+                toolStartedAt: toolStartedAt
+            )
+        } else {
+            state.lifecycle = .active(
+                turnStartedAt: state.turnStartedAt,
+                lastEvidenceAt: state.lastEvidenceAt
+            )
+        }
+    }
+
+    nonisolated private static func removeCodexToolCall(
+        ids: [String],
+        completedAt: Date,
+        state: inout CodexLifecycleParseState
+    ) {
+        let wasActiveTool = !state.pendingToolStartedAt.isEmpty
+        for id in ids {
+            state.pendingToolStartedAt.removeValue(forKey: id)
+        }
+        guard wasActiveTool else { return }
+        refreshCodexToolLifecycle(at: completedAt, state: &state)
     }
 
     private func codexRolloutURL(sessionId: String) -> URL? {

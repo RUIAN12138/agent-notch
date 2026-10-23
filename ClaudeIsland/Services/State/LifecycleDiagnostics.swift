@@ -271,6 +271,7 @@ nonisolated enum LifecycleDiagnosticsAssembler {
     private static func evidenceKind(_ evidence: LifecycleEvidence) -> String {
         switch evidence {
         case .active: return "active"
+        case .activeTool: return "active_tool"
         case .completed: return "completed"
         case .missing: return "missing"
         case .unknown: return "unknown"

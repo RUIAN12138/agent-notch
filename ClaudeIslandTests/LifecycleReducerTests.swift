@@ -35,6 +35,7 @@ final class LifecycleReducerTests: XCTestCase {
         lastActivity: Date,
         lastHookEventAt: Date? = nil,
         turnStartedAt: Date? = nil,
+        codexToolExecutionStartedAt: Date? = nil,
         completedAt: Date? = nil
     ) -> SessionLifecycleSnapshot {
         SessionLifecycleSnapshot(
@@ -44,6 +45,7 @@ final class LifecycleReducerTests: XCTestCase {
             createdAt: lastActivity,
             lastHookEventAt: lastHookEventAt,
             turnStartedAt: turnStartedAt,
+            codexToolExecutionStartedAt: codexToolExecutionStartedAt,
             completedAt: completedAt
         )
     }
@@ -86,6 +88,99 @@ final class LifecycleReducerTests: XCTestCase {
         XCTAssertEqual(next.phase, .processing)
         XCTAssertEqual(next.turnStartedAt, startedAt)
         XCTAssertNil(next.completedAt)
+    }
+
+    func testInFlightCodexToolSurvivesColdStartAndUsesBoundedTimeout() throws {
+        let now = Date(timeIntervalSince1970: 20_000)
+        let toolStartedAt = now.addingTimeInterval(-20 * 60)
+        let turnStartedAt = toolStartedAt.addingTimeInterval(-30)
+        let discovery = reduce(
+            current: nil,
+            observation: observation(
+                .activeTool(
+                    turnStartedAt: turnStartedAt,
+                    lastEvidenceAt: toolStartedAt,
+                    toolStartedAt: toolStartedAt
+                ),
+                observedAt: toolStartedAt,
+                receivedAt: now,
+                origin: .codexDiscovery
+            ),
+            allowCreation: true
+        )
+
+        guard case .create(let active) = discovery.mutation else {
+            return XCTFail("A recent unresolved tool call should restore as working")
+        }
+        XCTAssertEqual(active.phase, .processing)
+        XCTAssertEqual(active.codexToolExecutionStartedAt, toolStartedAt)
+
+        let stillRunning = reduce(
+            current: active,
+            observation: observation(
+                .active(
+                    turnStartedAt: turnStartedAt,
+                    lastEvidenceAt: toolStartedAt
+                ),
+                observedAt: toolStartedAt,
+                receivedAt: now.addingTimeInterval(30 * 60),
+                origin: .transcript
+            )
+        )
+        XCTAssertEqual(stillRunning.reason, .alreadyCurrent)
+        XCTAssertEqual(stillRunning.mutation, .none)
+        XCTAssertEqual(active.phase, .processing)
+
+        let timedOut = reduce(
+            current: active,
+            observation: observation(
+                .active(
+                    turnStartedAt: turnStartedAt,
+                    lastEvidenceAt: toolStartedAt
+                ),
+                observedAt: toolStartedAt,
+                receivedAt: now.addingTimeInterval(
+                    LifecycleReducer.codexToolExecutionStaleInterval + 1
+                ),
+                origin: .transcript
+            )
+        )
+        XCTAssertEqual(timedOut.reason, .staleActiveTimedOut)
+        XCTAssertEqual(timedOut.nextSnapshot?.phase, .waitingForInput)
+        XCTAssertNil(timedOut.nextSnapshot?.codexToolExecutionStartedAt)
+    }
+
+    func testDurableRunningToolReopensSessionPreviouslyTimedOutAsStale() throws {
+        let toolStartedAt = Date(timeIntervalSince1970: 30_000)
+        let staleCompletionAt = toolStartedAt.addingTimeInterval(10 * 60)
+        let resumedAt = toolStartedAt.addingTimeInterval(20 * 60)
+        let current = snapshot(
+            phase: .waitingForInput,
+            lastActivity: staleCompletionAt,
+            turnStartedAt: toolStartedAt.addingTimeInterval(-30),
+            completedAt: staleCompletionAt
+        )
+
+        let resumed = reduce(
+            current: current,
+            observation: observation(
+                .activeTool(
+                    turnStartedAt: toolStartedAt.addingTimeInterval(-30),
+                    lastEvidenceAt: toolStartedAt,
+                    toolStartedAt: toolStartedAt
+                ),
+                observedAt: toolStartedAt,
+                receivedAt: resumedAt
+            )
+        )
+
+        XCTAssertEqual(resumed.reason, .activeToolReopenedStaleSession)
+        guard case .update(let next) = resumed.mutation else {
+            return XCTFail("The durable in-flight tool should restore working state")
+        }
+        XCTAssertEqual(next.phase, .processing)
+        XCTAssertNil(next.completedAt)
+        XCTAssertEqual(next.codexToolExecutionStartedAt, toolStartedAt)
     }
 
     func testStaleDiscoveryCannotCreatePhantomWorkingCard() {

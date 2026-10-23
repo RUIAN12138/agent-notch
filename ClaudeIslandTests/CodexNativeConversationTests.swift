@@ -397,4 +397,74 @@ final class CodexNativeConversationTests: XCTestCase {
         XCTAssertEqual(newMessages.map(\.id), ["native-item-new-message"])
         XCTAssertEqual(newMessages.map(\.textContent), ["替换文件属于新会话"])
     }
+
+    func testLifecycleRecognizesToolCallUntilItsDurableResultArrives() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionId = "long-running-tool"
+        let url = try rolloutURL(root: root, sessionId: sessionId)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let startedAt = Date().addingTimeInterval(-20 * 60)
+        let startedAtString = formatter.string(from: startedAt)
+        let persistedStartedAt = try XCTUnwrap(
+            formatter.date(from: startedAtString)
+        )
+        let taskStarted: [String: Any] = [
+            "timestamp": startedAtString,
+            "type": "event_msg",
+            "payload": ["type": "task_started"]
+        ]
+        let functionCall: [String: Any] = [
+            "timestamp": startedAtString,
+            "type": "response_item",
+            "payload": [
+                "type": "function_call",
+                "call_id": "call-long-running",
+                "name": "exec_command",
+                "arguments": "{}"
+            ]
+        ]
+        try writeLines([
+            try encoded(metadata(sessionId: sessionId, cwd: "/tmp/long-tool")),
+            try encoded(taskStarted),
+            try encoded(functionCall)
+        ], to: url)
+
+        let parser = ConversationParser(codexSessionsRoot: root)
+        let running = await parser.codexTaskLifecycle(sessionId: sessionId)
+        guard case .activeTool(let turnStartedAt, let lastEvidenceAt, let toolStartedAt) = running else {
+            return XCTFail("Expected the unmatched tool call to keep the turn active")
+        }
+        XCTAssertEqual(turnStartedAt, persistedStartedAt)
+        XCTAssertEqual(lastEvidenceAt, persistedStartedAt)
+        XCTAssertEqual(toolStartedAt, persistedStartedAt)
+
+        let completedAt = Date()
+        let completedAtString = formatter.string(from: completedAt)
+        let persistedCompletedAt = try XCTUnwrap(
+            formatter.date(from: completedAtString)
+        )
+        let result: [String: Any] = [
+            "timestamp": completedAtString,
+            "type": "response_item",
+            "payload": [
+                "type": "function_call_output",
+                "call_id": "call-long-running",
+                "output": "done"
+            ]
+        ]
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: encoded(result))
+        try handle.write(contentsOf: Data([0x0A]))
+        try handle.close()
+
+        let finished = await parser.codexTaskLifecycle(sessionId: sessionId)
+        guard case .active(let finishedTurnStartedAt, let finishedEvidenceAt) = finished else {
+            return XCTFail("Expected a completed tool result to clear only the tool marker")
+        }
+        XCTAssertEqual(finishedTurnStartedAt, persistedStartedAt)
+        XCTAssertEqual(finishedEvidenceAt, persistedCompletedAt)
+    }
 }

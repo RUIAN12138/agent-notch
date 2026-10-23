@@ -75,6 +75,10 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// Native Codex boundary for the currently observed turn. Unlike token or
     /// tool activity, this changes only when a genuinely new turn starts.
     var lastCodexTurnStartedAt: Date?
+    /// Start of a Codex tool call still lacking a durable result. This lets
+    /// lifecycle arbitration tolerate long-running tools without extending the
+    /// stale timeout for ordinary turns.
+    var codexToolExecutionStartedAt: Date?
     /// Set only after a turn has actually produced its completion signal.
     /// A newly launched session that is merely waiting for its first prompt is
     /// not considered completed.
@@ -108,6 +112,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         createdAt: Date = Date(),
         lastHookEventAt: Date? = nil,
         lastCodexTurnStartedAt: Date? = nil,
+        codexToolExecutionStartedAt: Date? = nil,
         completedAt: Date? = nil
     ) {
         self.sessionId = sessionId
@@ -128,6 +133,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.createdAt = createdAt
         self.lastHookEventAt = lastHookEventAt
         self.lastCodexTurnStartedAt = lastCodexTurnStartedAt
+        self.codexToolExecutionStartedAt = codexToolExecutionStartedAt
         self.completedAt = completedAt
         if let completedAt {
             self.toolTracker.recordTerminalBoundary(completedAt)

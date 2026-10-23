@@ -66,6 +66,11 @@ nonisolated enum InteractionResolutionSignal: String, Equatable, Sendable {
 
 nonisolated enum LifecycleEvidence: Equatable, Sendable {
     case active(turnStartedAt: Date?, lastEvidenceAt: Date?)
+    case activeTool(
+        turnStartedAt: Date?,
+        lastEvidenceAt: Date?,
+        toolStartedAt: Date
+    )
     case completed(Date?)
     case missing
     case unknown
@@ -80,6 +85,16 @@ nonisolated enum LifecycleEvidence: Equatable, Sendable {
             self = .active(
                 turnStartedAt: turnStartedAt,
                 lastEvidenceAt: lastEvidenceAt
+            )
+        case .activeTool(
+            let turnStartedAt,
+            let lastEvidenceAt,
+            let toolStartedAt
+        ):
+            self = .activeTool(
+                turnStartedAt: turnStartedAt,
+                lastEvidenceAt: lastEvidenceAt,
+                toolStartedAt: toolStartedAt
             )
         case .completed(let completedAt):
             self = .completed(completedAt)
@@ -141,6 +156,7 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
     var createdAt: Date
     var lastHookEventAt: Date?
     var turnStartedAt: Date?
+    var codexToolExecutionStartedAt: Date?
     var completedAt: Date?
 
     init(
@@ -150,6 +166,7 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
         createdAt: Date,
         lastHookEventAt: Date? = nil,
         turnStartedAt: Date? = nil,
+        codexToolExecutionStartedAt: Date? = nil,
         completedAt: Date? = nil
     ) {
         self.source = source
@@ -158,6 +175,7 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
         self.createdAt = createdAt
         self.lastHookEventAt = lastHookEventAt
         self.turnStartedAt = turnStartedAt
+        self.codexToolExecutionStartedAt = codexToolExecutionStartedAt
         self.completedAt = completedAt
     }
 
@@ -169,6 +187,8 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
             createdAt: session.createdAt,
             lastHookEventAt: session.lastHookEventAt,
             turnStartedAt: session.lastCodexTurnStartedAt,
+            codexToolExecutionStartedAt:
+                session.codexToolExecutionStartedAt,
             completedAt: session.completedAt
         )
     }
@@ -180,6 +200,7 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
         session.createdAt = createdAt
         session.lastHookEventAt = lastHookEventAt
         session.lastCodexTurnStartedAt = turnStartedAt
+        session.codexToolExecutionStartedAt = codexToolExecutionStartedAt
         session.completedAt = completedAt
     }
 }
@@ -187,6 +208,7 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
 nonisolated enum LifecycleTransitionReason: String, Equatable, Sendable {
     case discoveredActiveTurn
     case activeTurnAdvanced
+    case activeToolReopenedStaleSession
     case newerTurnStarted
     case nativeCompletion
     case staleActiveTimedOut
@@ -344,6 +366,11 @@ nonisolated struct LifecycleTraceEntry: Equatable, Sendable {
 }
 
 nonisolated enum LifecycleReducer {
+    /// Keep a confirmed in-flight Codex call visible longer than an ordinary
+    /// quiet turn, but still retire it if the host disappears without writing
+    /// a result or terminal boundary.
+    static let codexToolExecutionStaleInterval: TimeInterval = 60 * 60
+
     static func reduce(
         current: SessionLifecycleSnapshot?,
         observation: SessionLifecycleObservation,
@@ -353,11 +380,39 @@ nonisolated enum LifecycleReducer {
     ) -> LifecycleTransition {
         switch observation.evidence {
         case .active(let turnStartedAt, let lastEvidenceAt):
+            let toolStartedAt: Date?
+            if observation.origin == .codexDiscovery ||
+                observation.origin == .codexPolling {
+                // Native Codex lifecycle rows authoritatively say whether a
+                // tool is still open; a completed/unknown native scan clears
+                // an earlier marker. Transcript refreshes preserve it.
+                toolStartedAt = nil
+            } else {
+                toolStartedAt = observation.source == .codex
+                    ? current?.codexToolExecutionStartedAt
+                    : nil
+            }
             return reduceActive(
                 current: current,
                 observation: observation,
                 turnStartedAt: turnStartedAt,
                 lastEvidenceAt: lastEvidenceAt,
+                toolStartedAt: toolStartedAt,
+                allowCreation: allowCreation,
+                activeStaleInterval: activeStaleInterval
+            )
+
+        case .activeTool(
+            let turnStartedAt,
+            let lastEvidenceAt,
+            let toolStartedAt
+        ):
+            return reduceActive(
+                current: current,
+                observation: observation,
+                turnStartedAt: turnStartedAt,
+                lastEvidenceAt: lastEvidenceAt,
+                toolStartedAt: toolStartedAt,
                 allowCreation: allowCreation,
                 activeStaleInterval: activeStaleInterval
             )
@@ -416,10 +471,14 @@ nonisolated enum LifecycleReducer {
         observation: SessionLifecycleObservation,
         turnStartedAt: Date?,
         lastEvidenceAt: Date?,
+        toolStartedAt: Date?,
         allowCreation: Bool,
         activeStaleInterval: TimeInterval
     ) -> LifecycleTransition {
         let evidenceAt = lastEvidenceAt ?? turnStartedAt ?? observation.observedAt
+        let staleInterval = toolStartedAt == nil
+            ? activeStaleInterval
+            : codexToolExecutionStaleInterval
 
         guard var next = current else {
             guard allowCreation else {
@@ -428,8 +487,9 @@ nonisolated enum LifecycleReducer {
                     reason: .creationNotAllowed
                 )
             }
-            guard observation.receivedAt.timeIntervalSince(evidenceAt) <
-                    activeStaleInterval else {
+            let staleBaseline = toolStartedAt ?? evidenceAt
+            guard observation.receivedAt.timeIntervalSince(staleBaseline) <
+                    staleInterval else {
                 return LifecycleTransition(
                     mutation: .none,
                     reason: .staleDiscovery
@@ -441,7 +501,8 @@ nonisolated enum LifecycleReducer {
                     phase: .processing,
                     lastActivity: evidenceAt,
                     createdAt: turnStartedAt ?? evidenceAt,
-                    turnStartedAt: turnStartedAt
+                    turnStartedAt: turnStartedAt,
+                    codexToolExecutionStartedAt: toolStartedAt
                 )),
                 reason: .discoveredActiveTurn
             )
@@ -461,9 +522,10 @@ nonisolated enum LifecycleReducer {
             evidenceAt,
             next.lastHookEventAt ?? .distantPast
         )
+        let staleBaseline = toolStartedAt ?? newestEvidenceAt
         if !interactionHasPriority,
-           observation.receivedAt.timeIntervalSince(newestEvidenceAt) >=
-            activeStaleInterval {
+           observation.receivedAt.timeIntervalSince(staleBaseline) >=
+            staleInterval {
             if next.phase == .waitingForInput, next.completedAt != nil {
                 return LifecycleTransition(
                     mutation: .none,
@@ -472,6 +534,7 @@ nonisolated enum LifecycleReducer {
             }
             next.phase = .waitingForInput
             next.completedAt = observation.receivedAt
+            next.codexToolExecutionStartedAt = nil
             return LifecycleTransition(
                 mutation: .update(next),
                 reason: .staleActiveTimedOut
@@ -479,7 +542,14 @@ nonisolated enum LifecycleReducer {
         }
 
         if let completedAt = next.completedAt {
-            guard let turnStartedAt, turnStartedAt > completedAt else {
+            let startsNewGeneration = turnStartedAt.map {
+                $0 > completedAt
+            } ?? false
+            // A durable unmatched tool call is stronger than a stale timeout:
+            // the native rollout has no completion boundary after that call.
+            // The hook-order guard above still prevents it from crossing an
+            // authoritative newer hook.
+            guard startsNewGeneration || toolStartedAt != nil else {
                 return LifecycleTransition(
                     mutation: .none,
                     reason: .activeWithoutNewGeneration
@@ -488,6 +558,7 @@ nonisolated enum LifecycleReducer {
         }
 
         let previous = next
+        next.codexToolExecutionStartedAt = toolStartedAt
         next.source = observation.source
         if let turnStartedAt {
             next.turnStartedAt = max(
@@ -515,9 +586,11 @@ nonisolated enum LifecycleReducer {
             mutation: .update(next),
             reason: interactionHasPriority
                 ? .interactionHasPriority
-                : previous.completedAt == nil
-                    ? .activeTurnAdvanced
-                    : .newerTurnStarted
+                    : toolStartedAt != nil && previous.completedAt != nil
+                        ? .activeToolReopenedStaleSession
+                        : previous.completedAt == nil
+                            ? .activeTurnAdvanced
+                            : .newerTurnStarted
         )
     }
 
@@ -565,6 +638,7 @@ nonisolated enum LifecycleReducer {
         next.phase = .waitingForInput
         next.completedAt = completionEvidenceAt
         next.lastActivity = max(next.lastActivity, completionEvidenceAt)
+        next.codexToolExecutionStartedAt = nil
         return LifecycleTransition(
             mutation: .update(next),
             reason: .nativeCompletion
@@ -623,6 +697,7 @@ nonisolated enum LifecycleReducer {
 
         next.phase = .waitingForInput
         next.completedAt = observation.receivedAt
+        next.codexToolExecutionStartedAt = nil
         return LifecycleTransition(
             mutation: .update(next),
             reason: .unknownActiveTimedOut
@@ -691,6 +766,7 @@ nonisolated enum LifecycleReducer {
                 observedAt
             )
             next.completedAt = nil
+            next.codexToolExecutionStartedAt = nil
 
             if !interactionHasPriority {
                 // A fresh hook is an authoritative resume boundary even if a
@@ -744,6 +820,7 @@ nonisolated enum LifecycleReducer {
             // fresh hook evidence, not a new completion or retention deadline.
             // Active hooks clear completedAt when a new generation resumes.
             next.completedAt = next.completedAt ?? observedAt
+            next.codexToolExecutionStartedAt = nil
             guard next != previous else {
                 return LifecycleTransition(
                     mutation: .none,
@@ -785,6 +862,7 @@ nonisolated enum LifecycleReducer {
                 next.completedAt ?? .distantPast,
                 observedAt
             )
+            next.codexToolExecutionStartedAt = nil
             guard next != previous else {
                 return LifecycleTransition(
                     mutation: .none,
@@ -853,6 +931,7 @@ nonisolated enum LifecycleReducer {
             resolvedAt
         )
         next.completedAt = nil
+        next.codexToolExecutionStartedAt = nil
 
         guard next != previous else {
             return LifecycleTransition(
@@ -903,6 +982,7 @@ nonisolated enum LifecycleReducer {
             observation.observedAt
         )
         next.completedAt = nil
+        next.codexToolExecutionStartedAt = nil
         guard next != previous else {
             return LifecycleTransition(
                 mutation: .none,
@@ -938,6 +1018,7 @@ nonisolated enum LifecycleReducer {
             next.completedAt ?? .distantPast,
             observation.observedAt
         )
+        next.codexToolExecutionStartedAt = nil
         guard next != previous else {
             return LifecycleTransition(
                 mutation: .none,
