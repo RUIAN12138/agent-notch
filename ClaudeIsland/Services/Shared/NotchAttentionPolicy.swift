@@ -44,6 +44,16 @@ struct NotchFollowUpCandidate: Equatable, Sendable {
 }
 
 enum NotchAttentionPolicy {
+    static func shouldCollapseNotificationPanelAfterCompletion(
+        status: NotchStatus,
+        openReason: NotchOpenReason,
+        hasPendingAutoExpandedInteraction: Bool
+    ) -> Bool {
+        status == .opened &&
+            openReason == .notification &&
+            !hasPendingAutoExpandedInteraction
+    }
+
     static func interactionToken(
         for session: SessionState
     ) -> NotchInteractionToken? {
@@ -63,6 +73,21 @@ enum NotchAttentionPolicy {
     ) -> Bool {
         context.toolName != "AskUserQuestion" ||
             expandQuestionsAutomatically
+    }
+
+    static func hasPendingAutoExpandedInteraction(
+        in sessions: [SessionState],
+        expandQuestionsAutomatically: Bool
+    ) -> Bool {
+        sessions.contains { session in
+            guard let interaction = session.activePermission else {
+                return false
+            }
+            return shouldAutoExpandInteraction(
+                interaction,
+                expandQuestionsAutomatically: expandQuestionsAutomatically
+            )
+        }
     }
 
     /// Select after applying compact-question policy so a newer quiet question

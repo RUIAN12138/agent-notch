@@ -1007,12 +1007,23 @@ struct NotchView: View {
 
         // Bounce the notch when a session newly enters waitingForInput state
         if !presentableTokens.isEmpty {
-            // A completed task gets a compact, visible reminder. If an older
-            // notification auto-opened the panel, collapse it; never override
-            // a panel the user deliberately opened by click or hover.
+            // A completed task gets a compact, visible reminder. Collapse a
+            // stale notification-owned panel, but keep actionable interactions
+            // visible and never override a panel the user deliberately opened.
             isVisible = true
             activityCoordinator.hideActivity()
-            if viewModel.status == .opened && viewModel.openReason == .notification {
+            let hasPendingAutoExpandedInteraction =
+                NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
+                    in: instances,
+                    expandQuestionsAutomatically:
+                        preferences.expandQuestionsAutomatically
+                )
+            if NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
+                status: viewModel.status,
+                openReason: viewModel.openReason,
+                hasPendingAutoExpandedInteraction:
+                    hasPendingAutoExpandedInteraction
+            ) {
                 viewModel.notchClose()
             }
 

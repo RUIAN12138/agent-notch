@@ -328,6 +328,78 @@ final class NotchPresentationTimingTests: XCTestCase {
         ))
     }
 
+    func testCompletionDoesNotCollapseNotificationPanelWithPendingInteraction() async {
+        func interactionSession(id: String, toolName: String) -> SessionState {
+            SessionState(
+                sessionId: id,
+                cwd: "/tmp/\(id)",
+                phase: .waitingForApproval(PermissionContext(
+                    toolUseId: "tool-\(id)",
+                    toolName: toolName,
+                    toolInput: nil,
+                    receivedAt: Date()
+                ))
+            )
+        }
+
+        let approval = interactionSession(id: "approval", toolName: "Bash")
+        let question = interactionSession(
+            id: "question",
+            toolName: "AskUserQuestion"
+        )
+        let idle = SessionState(
+            sessionId: "idle",
+            cwd: "/tmp/idle",
+            phase: .idle
+        )
+
+        XCTAssertTrue(NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
+            in: [approval],
+            expandQuestionsAutomatically: false
+        ))
+        XCTAssertFalse(NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
+            in: [question],
+            expandQuestionsAutomatically: false
+        ))
+        XCTAssertTrue(NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
+            in: [question],
+            expandQuestionsAutomatically: true
+        ))
+        XCTAssertFalse(NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
+            in: [idle],
+            expandQuestionsAutomatically: true
+        ))
+
+        XCTAssertTrue(
+            NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
+                status: .opened,
+                openReason: .notification,
+                hasPendingAutoExpandedInteraction: false
+            )
+        )
+        XCTAssertFalse(
+            NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
+                status: .opened,
+                openReason: .notification,
+                hasPendingAutoExpandedInteraction: true
+            )
+        )
+        XCTAssertFalse(
+            NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
+                status: .opened,
+                openReason: .click,
+                hasPendingAutoExpandedInteraction: true
+            )
+        )
+        XCTAssertFalse(
+            NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
+                status: .closed,
+                openReason: .notification,
+                hasPendingAutoExpandedInteraction: false
+            )
+        )
+    }
+
     func testPresentationDeduplicationIsScopedToSession() async throws {
         let observedAt = Date()
         let sharedContext = PermissionContext(
