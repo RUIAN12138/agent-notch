@@ -27,6 +27,7 @@ Design notes
   schema); other agents can override via DECISION_FORMATTERS below.
 """
 import json
+import fcntl
 import math
 import os
 import re
@@ -641,42 +642,200 @@ def persist_session_snapshot(state, observed_at=None):
     if os.path.lexists(path) and not _regular_cleanup_marker(path):
         return None
 
-    payload = {
-        "version": 1,
-        "observed_at": timestamp,
-        "session_id": session_id,
-        "cwd": cwd,
-        "source": source,
-        "event": state.get("event") if isinstance(state.get("event"), str) else "",
-        "status": state.get("status") if isinstance(state.get("status"), str) else "unknown",
-    }
-    pid = state.get("pid")
-    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
-        payload["pid"] = pid
-    tty = state.get("tty")
-    if isinstance(tty, str) and tty:
-        payload["tty"] = tty
-
-    temporary = path + "." + uuid.uuid4().hex + ".tmp"
+    # Hook commands run in separate processes. Serialize the read/modify/write
+    # of the per-session subagent cursor so parallel SubagentStart/Stop hooks
+    # cannot lose one another while the app is offline.
+    lock_path = os.path.join(directory, ".session-state.lock")
+    lock_flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        lock_flags |= os.O_NOFOLLOW
     try:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        descriptor = os.open(temporary, flags, 0o600)
-        with os.fdopen(descriptor, "w") as output:
-            json.dump(payload, output, separators=(",", ":"), sort_keys=True)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        return path
-    except (OSError, TypeError, ValueError):
+        lock_fd = os.open(lock_path, lock_flags, 0o600)
+        lock_info = os.fstat(lock_fd)
+        if (
+            not stat.S_ISREG(lock_info.st_mode)
+            or lock_info.st_uid != os.getuid()
+        ):
+            os.close(lock_fd)
+            return None
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except OSError:
         try:
-            os.unlink(temporary)
-        except OSError:
+            os.close(lock_fd)
+        except (OSError, UnboundLocalError):
             pass
         return None
+
+    try:
+        existing_payload = {}
+        if _regular_cleanup_marker(path):
+            try:
+                with open(path, "r") as previous_file:
+                    candidate = json.load(previous_file)
+                if isinstance(candidate, dict):
+                    existing_payload = candidate
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                existing_payload = {}
+
+        subagent_agents = {}
+        subagent_turn_had_agents = (
+            existing_payload.get("subagent_turn_had_agents") is True
+        )
+        try:
+            subagent_turn_started_at = float(
+                existing_payload.get("subagent_turn_started_at", float("-inf"))
+            )
+        except (TypeError, ValueError):
+            subagent_turn_started_at = float("-inf")
+        try:
+            subagent_root_stopped_at = float(
+                existing_payload.get("subagent_root_stopped_at", float("-inf"))
+            )
+        except (TypeError, ValueError):
+            subagent_root_stopped_at = float("-inf")
+        previous_agents = existing_payload.get("subagent_agents", {})
+        if isinstance(previous_agents, dict):
+            for agent_id, record in previous_agents.items():
+                if (
+                    isinstance(agent_id, str)
+                    and 0 < len(agent_id) <= 256
+                    and isinstance(record, dict)
+                    and isinstance(record.get("active"), bool)
+                ):
+                    try:
+                        agent_observed_at = float(record.get("observed_at"))
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(agent_observed_at):
+                        subagent_agents[agent_id] = {
+                            "active": record["active"],
+                            "observed_at": agent_observed_at,
+                        }
+
+        event = state.get("event")
+        if (
+            event == "UserPromptSubmit"
+            and timestamp > subagent_turn_started_at
+            and timestamp > subagent_root_stopped_at
+        ):
+            subagent_turn_started_at = timestamp
+            # Another hook process may have persisted a later child event
+            # before this prompt hook acquired the lock. Preserve evidence
+            # whose source timestamp is after this turn's prompt.
+            subagent_turn_had_agents = any(
+                record["observed_at"] >= timestamp
+                for record in subagent_agents.values()
+            )
+        elif (
+            event == "Stop"
+            and timestamp >= subagent_turn_started_at
+            and timestamp > subagent_root_stopped_at
+        ):
+            subagent_root_stopped_at = timestamp
+            subagent_turn_had_agents = False
+        agent_id = state.get("agent_id")
+        if (
+            event == "SubagentStart"
+            and timestamp >= subagent_turn_started_at
+            and timestamp > subagent_root_stopped_at
+        ):
+            subagent_turn_had_agents = True
+        if (
+            event in ("SubagentStart", "SubagentStop")
+            and isinstance(agent_id, str)
+            and 0 < len(agent_id) <= 256
+            and timestamp >= subagent_turn_started_at
+            and (
+                event == "SubagentStop"
+                or timestamp > subagent_root_stopped_at
+            )
+        ):
+            previous_agent = subagent_agents.get(agent_id)
+            previous_agent_at = (
+                previous_agent.get("observed_at", float("-inf"))
+                if isinstance(previous_agent, dict)
+                else float("-inf")
+            )
+            if timestamp > previous_agent_at:
+                subagent_agents[agent_id] = {
+                    "active": event == "SubagentStart",
+                    "observed_at": timestamp,
+                }
+
+        # Bound completed identity history without ever dropping active agents.
+        if len(subagent_agents) > 512:
+            completed = sorted(
+                (
+                    (record["observed_at"], agent_id)
+                    for agent_id, record in subagent_agents.items()
+                    if not record["active"]
+                )
+            )
+            for _, agent_id in completed[:len(subagent_agents) - 512]:
+                subagent_agents.pop(agent_id, None)
+
+        # Preserve the newest lifecycle event if independently launched hook
+        # processes reach the lock in the opposite order from their timestamps.
+        try:
+            previous_observed_at = float(existing_payload.get("observed_at", float("-inf")))
+        except (TypeError, ValueError):
+            previous_observed_at = float("-inf")
+        use_previous_lifecycle = previous_observed_at > timestamp
+
+        if use_previous_lifecycle:
+            payload = dict(existing_payload)
+        else:
+            payload = {
+                "version": 1,
+                "observed_at": timestamp,
+                "session_id": session_id,
+                "cwd": cwd,
+                "source": source,
+                "event": event if isinstance(event, str) else "",
+                "status": state.get("status") if isinstance(state.get("status"), str) else "unknown",
+            }
+            pid = state.get("pid")
+            if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+                payload["pid"] = pid
+            tty = state.get("tty")
+            if isinstance(tty, str) and tty:
+                payload["tty"] = tty
+        if subagent_agents:
+            payload["subagent_agents"] = subagent_agents
+        else:
+            payload.pop("subagent_agents", None)
+        payload["subagent_turn_had_agents"] = subagent_turn_had_agents
+        if math.isfinite(subagent_turn_started_at):
+            payload["subagent_turn_started_at"] = subagent_turn_started_at
+        if math.isfinite(subagent_root_stopped_at):
+            payload["subagent_root_stopped_at"] = subagent_root_stopped_at
+
+        temporary = path + "." + uuid.uuid4().hex + ".tmp"
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = os.open(temporary, flags, 0o600)
+            with os.fdopen(descriptor, "w") as output:
+                json.dump(payload, output, separators=(",", ":"), sort_keys=True)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+            return path
+        except (OSError, TypeError, ValueError):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            return None
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
 
 
 def remove_session_snapshot(source, session_id):
@@ -972,6 +1131,10 @@ def main():
         # Extra field ignored by the socket server but used by startup restore.
         "source": source,
     }
+    if event in ("SubagentStart", "SubagentStop"):
+        agent_id = data.get("agent_id")
+        if isinstance(agent_id, str) and 0 < len(agent_id) <= 256:
+            state["agent_id"] = agent_id
     if event in ("PreToolUse", "PostToolUse", "PostToolUseFailure",
                  "PermissionRequest", "PermissionDenied"):
         state["tool"] = data.get("tool_name")

@@ -39,6 +39,10 @@ actor SessionStore {
         let lastHookEventAt: Date?
         let lastCodexTurnStartedAt: Date?
         let completedAt: Date?
+        let subagentAgents: [String: SubagentHookAgentState]?
+        let subagentTurnHadAgents: Bool?
+        let subagentTurnStartedAt: TimeInterval?
+        let subagentRootStoppedAt: TimeInterval?
         // Numeric seconds preserve subsecond ordering; the legacy ISO-8601
         // date strategy rounds Date fields to seconds during persistence.
         let toolTerminalBoundaryAt: TimeInterval?
@@ -57,12 +61,20 @@ actor SessionStore {
         let status: String
         let pid: Int?
         let tty: String?
+        let subagentAgents: [String: SubagentHookAgentState]?
+        let subagentTurnHadAgents: Bool?
+        let subagentTurnStartedAt: TimeInterval?
+        let subagentRootStoppedAt: TimeInterval?
 
         enum CodingKeys: String, CodingKey {
             case version
             case observedAt = "observed_at"
             case sessionId = "session_id"
             case cwd, source, event, status, pid, tty
+            case subagentAgents = "subagent_agents"
+            case subagentTurnHadAgents = "subagent_turn_had_agents"
+            case subagentTurnStartedAt = "subagent_turn_started_at"
+            case subagentRootStoppedAt = "subagent_root_stopped_at"
         }
     }
 
@@ -470,16 +482,17 @@ actor SessionStore {
             (event.event != "PreToolUse" && !isExactPendingCompletion)
         if mayStartTrackedWork && didAcceptExactPendingCompletion {
             processToolTracking(event: event, session: &session)
-            // A late SubagentStop may still be accepted for ordinary tool
-            // bookkeeping, but it must not create fresh attention after the
-            // parent turn's terminal boundary was already accepted.
-            if event.event != "SubagentStop" || shouldApplyLifecycle {
-                processSubagentTracking(
-                    event: event,
-                    observedAt: observedAt,
-                    session: &session
-                )
-            }
+            // Even a late SubagentStop may clear its exact ID from the active
+            // set. After root completion, only a matched active identity can
+            // create team attention; unmatched legacy events stay suppressed.
+            processSubagentTracking(
+                event: event,
+                observedAt: observedAt,
+                allowCompletionAttention:
+                    event.event != "SubagentStop" || shouldApplyLifecycle ||
+                        event.agentId != nil,
+                session: &session
+            )
         }
 
         if shouldApplyLifecycle && isCompletionSignal {
@@ -749,9 +762,22 @@ actor SessionStore {
     private func processSubagentTracking(
         event: HookEvent,
         observedAt: Date,
+        allowCompletionAttention: Bool = true,
         session: inout SessionState
     ) {
         switch event.event {
+        case "UserPromptSubmit":
+            session.subagentHookState.beginRootTurn(
+                at: observedAt.timeIntervalSince1970
+            )
+
+        case "SubagentStart":
+            guard let agentID = event.agentId else { return }
+            session.subagentHookState.observeStart(
+                agentID: agentID,
+                at: observedAt.timeIntervalSince1970
+            )
+
         case "PreToolUse":
             if ToolCallItem.isSubagentContainerName(event.tool), let toolUseId = event.toolUseId {
                 let description = event.toolInput?["description"]?.value as? String
@@ -805,10 +831,37 @@ actor SessionStore {
             }
 
         case "SubagentStop":
-            // This is a teammate completion, not the root task's Stop. Keep
-            // its source timestamp so delayed UI delivery cannot replay it.
-            session.recordSubagentCompletion(at: observedAt)
+            // This is a teammate completion, not the root task's Stop. Pair
+            // Claude's stable agent_id so duplicates, out-of-order Starts,
+            // and the last member of a parallel group are distinguishable.
+            if let agentID = event.agentId {
+                let observation = session.subagentHookState.observeStop(
+                    agentID: agentID,
+                    at: observedAt.timeIntervalSince1970
+                )
+                guard allowCompletionAttention,
+                      observation.shouldPresentIndividualCompletion else {
+                    return
+                }
+                session.recordSubagentCompletion(at: observedAt)
+                if observation.completedAllActiveAgents {
+                    session.recordAllSubagentsFinished(at: observedAt)
+                }
+            } else {
+                // Older Hook payloads can still surface a per-agent event,
+                // but without identity they cannot prove that all are done.
+                if allowCompletionAttention {
+                    session.recordSubagentCompletion(at: observedAt)
+                }
+            }
             Self.logger.debug("SubagentStop received")
+
+        case "Stop":
+            if session.subagentHookState.consumeRootResponse(
+                at: observedAt.timeIntervalSince1970
+            ) {
+                session.recordSubagentRootResponse(at: observedAt)
+            }
 
         default:
             break
@@ -2462,6 +2515,13 @@ actor SessionStore {
                 lastHookEventAt: session.lastHookEventAt,
                 lastCodexTurnStartedAt: session.lastCodexTurnStartedAt,
                 completedAt: session.completedAt,
+                subagentAgents: session.subagentHookState.agents,
+                subagentTurnHadAgents:
+                    session.subagentHookState.hasAgentActivityInCurrentTurn,
+                subagentTurnStartedAt:
+                    session.subagentHookState.rootTurnStartedAt,
+                subagentRootStoppedAt:
+                    session.subagentHookState.lastRootResponseAt,
                 toolTerminalBoundaryAt: session.toolTracker.terminalBoundaryAt?.timeIntervalSince1970
             )
         }
@@ -2646,7 +2706,14 @@ actor SessionStore {
                     : nil,
                 completedAt: lifecycleStartsNewerTurn
                     ? nil
-                    : lifecycleCompletion
+                    : lifecycleCompletion,
+                subagentHookState: SubagentHookState(
+                    agents: item.subagentAgents ?? [:],
+                    hasAgentActivityInCurrentTurn:
+                        item.subagentTurnHadAgents ?? false,
+                    rootTurnStartedAt: item.subagentTurnStartedAt,
+                    lastRootResponseAt: item.subagentRootStoppedAt
+                )
             )
 
             // The socket starts concurrently with restoration. A fresh hook is
@@ -2810,6 +2877,13 @@ actor SessionStore {
                     pid: pid,
                     tree: processTree
                 )
+                existing.subagentHookState = SubagentHookState(
+                    agents: snapshot.subagentAgents ?? [:],
+                    hasAgentActivityInCurrentTurn:
+                        snapshot.subagentTurnHadAgents ?? false,
+                    rootTurnStartedAt: snapshot.subagentTurnStartedAt,
+                    lastRootResponseAt: snapshot.subagentRootStoppedAt
+                )
                 sessions[snapshot.sessionId] = existing
             } else {
                 let codexTitle = source == .codex
@@ -2842,7 +2916,14 @@ actor SessionStore {
                     ),
                     lastActivity: observedAt,
                     createdAt: observedAt,
-                    lastHookEventAt: observedAt
+                    lastHookEventAt: observedAt,
+                    subagentHookState: SubagentHookState(
+                        agents: snapshot.subagentAgents ?? [:],
+                        hasAgentActivityInCurrentTurn:
+                            snapshot.subagentTurnHadAgents ?? false,
+                        rootTurnStartedAt: snapshot.subagentTurnStartedAt,
+                        lastRootResponseAt: snapshot.subagentRootStoppedAt
+                    )
                 )
             }
             restored.append((snapshot.sessionId, snapshot.cwd))

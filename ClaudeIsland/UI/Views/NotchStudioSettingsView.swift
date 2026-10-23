@@ -726,17 +726,37 @@ struct NotchStudioSettingsView: View {
                 )
 
                 Divider()
-                settingToggle(
-                    t("Expand when a teammate finishes", "队友完成时展开"),
-                    detail: t(
-                        "Show a new Claude subagent completion without playing a sound. Approvals and panels you opened stay in control.",
-                        "Claude 子 Agent 完成时显示面板，不播放提示音；待处理审批和你主动打开的面板保持优先。"
-                    ),
-                    isOn: $preferences.expandOnAgentTeamCompletion
-                )
-                .accessibilityIdentifier(
-                    "settings.notifications.expandOnAgentTeamCompletion"
-                )
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(t("Teammate completion timing", "子 Agent 完成提醒"))
+                        Spacer(minLength: 16)
+                        Picker(
+                            t("Notify on", "提醒时机"),
+                            selection: $preferences.agentTeamCompletionTiming
+                        ) {
+                            Text(t("Off", "关闭"))
+                                .tag(AgentTeamCompletionTiming.disabled)
+                            Text(t("Each agent", "每个子 Agent"))
+                                .tag(AgentTeamCompletionTiming.everyCompletion)
+                            Text(t("All finished", "全部完成后"))
+                                .tag(AgentTeamCompletionTiming.allAgentsFinished)
+                            Text(t("Root replies", "主 Agent 回复时"))
+                                .tag(AgentTeamCompletionTiming.rootResponse)
+                        }
+                        .pickerStyle(.menu)
+                        .fixedSize()
+                        .accessibilityIdentifier(
+                            "settings.notifications.agentTeamCompletionTiming"
+                        )
+                    }
+                    Text(t(
+                        "Choose when Claude teammate work may open the panel. 'All finished' waits for matching start/stop identities; missing IDs are never guessed.",
+                        "选择 Claude 子 Agent 何时触发展开。“全部完成后”会等待可配对的开始/结束身份；身份缺失时不会猜测。"
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Divider()
                 sliderRow(

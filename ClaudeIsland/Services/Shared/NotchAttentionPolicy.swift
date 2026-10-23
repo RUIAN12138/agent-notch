@@ -22,8 +22,15 @@ struct NotchCompletionToken: Hashable, Sendable {
 /// generation stays observable when UI snapshots merge several Hook updates.
 struct NotchSubagentCompletionToken: Hashable, Sendable {
     let sessionId: String
+    let kind: NotchSubagentCompletionKind
     let generation: UInt64
     let completedAt: Date
+}
+
+enum NotchSubagentCompletionKind: String, Hashable, Sendable {
+    case individual
+    case allAgentsFinished
+    case rootResponse
 }
 
 /// Presentation deduplication uses the same complete identity as permission
@@ -178,13 +185,40 @@ enum NotchAttentionPolicy {
     static func subagentCompletionToken(
         for session: SessionState
     ) -> NotchSubagentCompletionToken? {
-        guard session.subagentCompletionGeneration > 0,
-              let completedAt = session.lastSubagentCompletedAt else {
+        subagentCompletionToken(for: session, timing: .everyCompletion)
+    }
+
+    static func subagentCompletionToken(
+        for session: SessionState,
+        timing: AgentTeamCompletionTiming
+    ) -> NotchSubagentCompletionToken? {
+        let kind: NotchSubagentCompletionKind
+        let generation: UInt64
+        let completedAt: Date?
+        switch timing {
+        case .everyCompletion:
+            kind = .individual
+            generation = session.subagentCompletionGeneration
+            completedAt = session.lastSubagentCompletedAt
+        case .allAgentsFinished:
+            kind = .allAgentsFinished
+            generation = session.allSubagentsFinishedGeneration
+            completedAt = session.lastAllSubagentsFinishedAt
+        case .rootResponse:
+            kind = .rootResponse
+            generation = session.subagentRootResponseGeneration
+            completedAt = session.lastSubagentRootResponseAt
+        case .disabled:
+            return nil
+        }
+
+        guard generation > 0, let completedAt else {
             return nil
         }
         return NotchSubagentCompletionToken(
             sessionId: session.sessionId,
-            generation: session.subagentCompletionGeneration,
+            kind: kind,
+            generation: generation,
             completedAt: completedAt
         )
     }

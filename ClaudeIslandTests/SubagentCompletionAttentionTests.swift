@@ -11,13 +11,25 @@ final class SubagentCompletionAttentionTests: XCTestCase {
         let preferences = NotchPreferences(defaults: defaults)
         XCTAssertFalse(preferences.expandOnAgentTeamCompletion)
 
-        preferences.expandOnAgentTeamCompletion = true
+        preferences.agentTeamCompletionTiming = .everyCompletion
         let restored = NotchPreferences(defaults: defaults)
         XCTAssertTrue(restored.expandOnAgentTeamCompletion)
         XCTAssertEqual(
-            defaults.object(forKey: "notchExpandOnAgentTeamCompletion") as? Bool,
-            true
+            defaults.string(forKey: "notchAgentTeamCompletionTiming"),
+            AgentTeamCompletionTiming.everyCompletion.rawValue
         )
+    }
+
+    func testLegacyTeamExpansionPreferenceMigratesToPerAgentTiming() throws {
+        let suite = "SubagentCompletionAttentionTests.Legacy.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "notchExpandOnAgentTeamCompletion")
+
+        let preferences = NotchPreferences(defaults: defaults)
+
+        XCTAssertEqual(preferences.agentTeamCompletionTiming, .everyCompletion)
+        XCTAssertTrue(preferences.expandOnAgentTeamCompletion)
     }
 
     func testTeamExpansionRespectsOwnershipAndPendingInteractions() {
@@ -80,6 +92,279 @@ final class SubagentCompletionAttentionTests: XCTestCase {
         // A repeated event with the same source timestamp is idempotent.
         session.recordSubagentCompletion(at: completedAt)
         XCTAssertEqual(session.subagentCompletionGeneration, 1)
+    }
+
+    func testTrackedAgentsOnlySignalAllFinishedAfterTheLastMatchingStop() {
+        var state = SubagentHookState()
+        state.observeStart(agentID: "agent-a", at: 10)
+        state.observeStart(agentID: "agent-b", at: 11)
+        XCTAssertEqual(state.activeAgentIDs, ["agent-a", "agent-b"])
+
+        let firstStop = state.observeStop(agentID: "agent-a", at: 12)
+        XCTAssertTrue(firstStop.shouldPresentIndividualCompletion)
+        XCTAssertFalse(firstStop.completedAllActiveAgents)
+        XCTAssertEqual(state.activeAgentIDs, ["agent-b"])
+
+        let duplicateStop = state.observeStop(agentID: "agent-a", at: 13)
+        XCTAssertFalse(duplicateStop.shouldPresentIndividualCompletion)
+        XCTAssertFalse(duplicateStop.completedAllActiveAgents)
+
+        // A delayed start from before the stop cannot resurrect the ID.
+        state.observeStart(agentID: "agent-a", at: 11.5)
+        XCTAssertEqual(state.activeAgentIDs, ["agent-b"])
+
+        let finalStop = state.observeStop(agentID: "agent-b", at: 14)
+        XCTAssertTrue(finalStop.shouldPresentIndividualCompletion)
+        XCTAssertTrue(finalStop.completedAllActiveAgents)
+        XCTAssertTrue(state.activeAgentIDs.isEmpty)
+
+        let delayedDuplicate = state.observeStop(agentID: "agent-b", at: 13.5)
+        XCTAssertFalse(delayedDuplicate.shouldPresentIndividualCompletion)
+        XCTAssertFalse(delayedDuplicate.completedAllActiveAgents)
+    }
+
+    func testLatePreviousTurnAgentEventsCannotRearmCurrentTurnAttention() {
+        var state = SubagentHookState()
+        state.beginRootTurn(at: 10)
+        state.observeStart(agentID: "agent-a", at: 11)
+        XCTAssertTrue(state.consumeRootResponse(at: 12))
+
+        // A delayed Start from before the accepted root response must not
+        // resurrect this completed turn's teammate-attention marker.
+        state.observeStart(agentID: "agent-b", at: 11.5)
+        XCTAssertFalse(state.hasAgentActivityInCurrentTurn)
+        XCTAssertFalse(state.consumeRootResponse(at: 11.75))
+
+        state.beginRootTurn(at: 13)
+        state.observeStart(agentID: "agent-c", at: 14)
+        XCTAssertTrue(state.hasAgentActivityInCurrentTurn)
+        XCTAssertTrue(state.consumeRootResponse(at: 15))
+        XCTAssertFalse(state.hasAgentActivityInCurrentTurn)
+    }
+
+    func testAttentionTimingSelectsIndividualOrAllFinishedCursor() throws {
+        var session = SessionState(
+            sessionId: "team-timing",
+            cwd: "/tmp/team-timing"
+        )
+        session.recordSubagentCompletion(at: Date(timeIntervalSince1970: 10))
+        XCTAssertEqual(
+            NotchAttentionPolicy.subagentCompletionToken(
+                for: session,
+                timing: .everyCompletion
+            )?.kind,
+            .individual
+        )
+        XCTAssertNil(NotchAttentionPolicy.subagentCompletionToken(
+            for: session,
+            timing: .allAgentsFinished
+        ))
+
+        session.recordAllSubagentsFinished(at: Date(timeIntervalSince1970: 12))
+        XCTAssertEqual(
+            NotchAttentionPolicy.subagentCompletionToken(
+                for: session,
+                timing: .allAgentsFinished
+            )?.kind,
+            .allAgentsFinished
+        )
+        XCTAssertNil(NotchAttentionPolicy.subagentCompletionToken(
+            for: session,
+            timing: .rootResponse
+        ))
+
+        session.recordSubagentRootResponse(at: Date(timeIntervalSince1970: 13))
+        XCTAssertEqual(
+            NotchAttentionPolicy.subagentCompletionToken(
+                for: session,
+                timing: .rootResponse
+            )?.kind,
+            .rootResponse
+        )
+    }
+
+    func testClaudeHookPayloadDecodesStableAgentIdentity() throws {
+        let data = Data(#"{"session_id":"session","cwd":"/tmp","event":"SubagentStart","status":"processing","agent_id":"agent-123"}"#.utf8)
+        let event = try JSONDecoder().decode(HookEvent.self, from: data)
+        XCTAssertEqual(event.agentId, "agent-123")
+    }
+
+    func testStorePairsClaudeAgentIDsAndIgnoresDuplicateStops() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "subagent-set-\(UUID().uuidString)"
+        let start = Date()
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: start
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStart",
+            status: "processing",
+            observedAt: start.addingTimeInterval(1),
+            agentId: "agent-a"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStart",
+            status: "processing",
+            observedAt: start.addingTimeInterval(2),
+            agentId: "agent-b"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStop",
+            status: "processing",
+            observedAt: start.addingTimeInterval(3),
+            agentId: "agent-a"
+        )))
+
+        let firstSnapshot = await store.session(for: sessionId)
+        var session = try XCTUnwrap(firstSnapshot)
+        XCTAssertEqual(session.subagentCompletionGeneration, 1)
+        XCTAssertEqual(session.allSubagentsFinishedGeneration, 0)
+        XCTAssertEqual(session.subagentHookState.activeAgentIDs, ["agent-b"])
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStop",
+            status: "processing",
+            observedAt: start.addingTimeInterval(4),
+            agentId: "agent-b"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStop",
+            status: "processing",
+            observedAt: start.addingTimeInterval(5),
+            agentId: "agent-b"
+        )))
+
+        let finalSnapshot = await store.session(for: sessionId)
+        session = try XCTUnwrap(finalSnapshot)
+        XCTAssertEqual(session.subagentCompletionGeneration, 2)
+        XCTAssertEqual(session.allSubagentsFinishedGeneration, 1)
+        XCTAssertTrue(session.subagentHookState.activeAgentIDs.isEmpty)
+    }
+
+    func testRootResponseTimingOnlyCreatesTeamAttentionAfterSubagentActivity() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "subagent-root-response-\(UUID().uuidString)"
+        let start = Date()
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: start
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "Stop",
+            status: "waiting_for_input",
+            observedAt: start.addingTimeInterval(1)
+        )))
+        var snapshot = await store.session(for: sessionId)
+        var session = try XCTUnwrap(snapshot)
+        XCTAssertEqual(session.subagentRootResponseGeneration, 0)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: start.addingTimeInterval(2)
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStart",
+            status: "processing",
+            observedAt: start.addingTimeInterval(3),
+            agentId: "agent-root-response"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStop",
+            status: "processing",
+            observedAt: start.addingTimeInterval(4),
+            agentId: "agent-root-response"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "Stop",
+            status: "waiting_for_input",
+            observedAt: start.addingTimeInterval(5)
+        )))
+
+        snapshot = await store.session(for: sessionId)
+        session = try XCTUnwrap(snapshot)
+        XCTAssertEqual(session.subagentRootResponseGeneration, 1)
+        XCTAssertEqual(
+            try XCTUnwrap(session.lastSubagentRootResponseAt)
+                .timeIntervalSince(start.addingTimeInterval(5)),
+            0,
+            accuracy: 0.001
+        )
+        XCTAssertFalse(session.subagentHookState.hasAgentActivityInCurrentTurn)
+    }
+
+    func testMatchedActiveSubagentCanFinishAfterRootWithoutRevivingRootPhase() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "subagent-late-finish-\(UUID().uuidString)"
+        let start = Date()
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: start
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStart",
+            status: "processing",
+            observedAt: start.addingTimeInterval(1),
+            agentId: "agent-late"
+        )))
+        let rootStoppedAt = start.addingTimeInterval(2)
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "Stop",
+            status: "waiting_for_input",
+            observedAt: rootStoppedAt
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStop",
+            status: "processing",
+            observedAt: start.addingTimeInterval(3),
+            agentId: "agent-late"
+        )))
+
+        let snapshot = await store.session(for: sessionId)
+        let session = try XCTUnwrap(snapshot)
+        XCTAssertEqual(session.phase, .waitingForInput)
+        XCTAssertEqual(
+            try XCTUnwrap(session.completedAt).timeIntervalSince(rootStoppedAt),
+            0,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(session.subagentCompletionGeneration, 1)
+        XCTAssertEqual(session.allSubagentsFinishedGeneration, 1)
+        XCTAssertTrue(session.subagentHookState.activeAgentIDs.isEmpty)
     }
 
     func testSubagentStopIsDistinctFromRootCompletionAndLateStopIsIgnored() async throws {
@@ -153,7 +438,8 @@ final class SubagentCompletionAttentionTests: XCTestCase {
         sessionId: String,
         event: String,
         status: String,
-        observedAt: Date
+        observedAt: Date,
+        agentId: String? = nil
     ) -> HookEvent {
         HookEvent(
             sessionId: sessionId,
@@ -168,7 +454,8 @@ final class SubagentCompletionAttentionTests: XCTestCase {
             toolInput: nil,
             toolUseId: nil,
             notificationType: nil,
-            message: nil
+            message: nil,
+            agentId: agentId
         )
     }
 }

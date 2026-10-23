@@ -89,6 +89,16 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// when several SessionStore publications are coalesced into one frame.
     var subagentCompletionGeneration: UInt64
     var lastSubagentCompletedAt: Date?
+    /// Identity-aware Hook state supports exact pairing of parallel Claude
+    /// SubagentStart/SubagentStop events, including app relaunch recovery.
+    var subagentHookState: SubagentHookState
+    /// Separate cursor for the transition from one-or-more active agents to
+    /// none. It is intentionally not inferred from an unmatched Stop event.
+    var allSubagentsFinishedGeneration: UInt64
+    var lastAllSubagentsFinishedAt: Date?
+    /// Cursor for the root response after a turn that actually used subagents.
+    var subagentRootResponseGeneration: UInt64
+    var lastSubagentRootResponseAt: Date?
 
     // MARK: - Identifiable
 
@@ -121,7 +131,12 @@ struct SessionState: Equatable, Identifiable, Sendable {
         codexToolExecutionStartedAt: Date? = nil,
         completedAt: Date? = nil,
         subagentCompletionGeneration: UInt64 = 0,
-        lastSubagentCompletedAt: Date? = nil
+        lastSubagentCompletedAt: Date? = nil,
+        subagentHookState: SubagentHookState = SubagentHookState(),
+        allSubagentsFinishedGeneration: UInt64 = 0,
+        lastAllSubagentsFinishedAt: Date? = nil,
+        subagentRootResponseGeneration: UInt64 = 0,
+        lastSubagentRootResponseAt: Date? = nil
     ) {
         self.sessionId = sessionId
         self.cwd = cwd
@@ -145,6 +160,11 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.completedAt = completedAt
         self.subagentCompletionGeneration = subagentCompletionGeneration
         self.lastSubagentCompletedAt = lastSubagentCompletedAt
+        self.subagentHookState = subagentHookState
+        self.allSubagentsFinishedGeneration = allSubagentsFinishedGeneration
+        self.lastAllSubagentsFinishedAt = lastAllSubagentsFinishedAt
+        self.subagentRootResponseGeneration = subagentRootResponseGeneration
+        self.lastSubagentRootResponseAt = lastSubagentRootResponseAt
         if let completedAt {
             self.toolTracker.recordTerminalBoundary(completedAt)
         }
@@ -158,6 +178,19 @@ struct SessionState: Equatable, Identifiable, Sendable {
         }
         subagentCompletionGeneration &+= 1
         lastSubagentCompletedAt = observedAt
+    }
+
+    nonisolated mutating func recordAllSubagentsFinished(at observedAt: Date) {
+        allSubagentsFinishedGeneration &+= 1
+        lastAllSubagentsFinishedAt = max(
+            lastAllSubagentsFinishedAt ?? .distantPast,
+            observedAt
+        )
+    }
+
+    nonisolated mutating func recordSubagentRootResponse(at observedAt: Date) {
+        subagentRootResponseGeneration &+= 1
+        lastSubagentRootResponseAt = observedAt
     }
 
     // MARK: - Derived Properties
@@ -335,6 +368,155 @@ struct ToolTracker: Equatable, Sendable {
     /// Complete a tool
     nonisolated mutating func completeTool(id: String, success: Bool) {
         inProgress.removeValue(forKey: id)
+    }
+}
+
+/// Minimal identity cursor for Claude's SubagentStart/SubagentStop Hook pair.
+/// The bridge persists this map in its privacy-minimized session snapshot, so
+/// an app launched mid-run still knows which exact agents remain active.
+nonisolated struct SubagentHookAgentState: Codable, Equatable, Sendable {
+    var isActive: Bool
+    var observedAt: TimeInterval
+
+    enum CodingKeys: String, CodingKey {
+        case isActive = "active"
+        case observedAt = "observed_at"
+    }
+}
+
+nonisolated struct SubagentStopObservation: Equatable, Sendable {
+    let shouldPresentIndividualCompletion: Bool
+    let completedAllActiveAgents: Bool
+}
+
+nonisolated struct SubagentHookState: Codable, Equatable, Sendable {
+    private(set) var agents: [String: SubagentHookAgentState]
+    private(set) var hasAgentActivityInCurrentTurn: Bool
+    private(set) var rootTurnStartedAt: TimeInterval?
+    private(set) var lastRootResponseAt: TimeInterval?
+
+    init(
+        agents: [String: SubagentHookAgentState] = [:],
+        hasAgentActivityInCurrentTurn: Bool = false,
+        rootTurnStartedAt: TimeInterval? = nil,
+        lastRootResponseAt: TimeInterval? = nil
+    ) {
+        self.agents = agents.filter { id, state in
+            !id.isEmpty && id.count <= 256 && state.observedAt.isFinite
+        }
+        self.hasAgentActivityInCurrentTurn = hasAgentActivityInCurrentTurn
+        self.rootTurnStartedAt = rootTurnStartedAt.flatMap {
+            $0.isFinite ? $0 : nil
+        }
+        self.lastRootResponseAt = lastRootResponseAt.flatMap {
+            $0.isFinite ? $0 : nil
+        }
+    }
+
+    var activeAgentIDs: Set<String> {
+        Set(agents.compactMap { id, state in
+            state.isActive ? id : nil
+        })
+    }
+
+    mutating func observeStart(agentID: String, at observedAt: TimeInterval) {
+        guard isValid(agentID: agentID, observedAt: observedAt),
+              isInsideCurrentRootTurn(observedAt),
+              observedAt > (agents[agentID]?.observedAt ?? -.infinity) else {
+            return
+        }
+        agents[agentID] = SubagentHookAgentState(
+            isActive: true,
+            observedAt: observedAt
+        )
+        hasAgentActivityInCurrentTurn = true
+        pruneCompletedAgentsIfNeeded()
+    }
+
+    mutating func beginRootTurn(at observedAt: TimeInterval) {
+        guard observedAt.isFinite,
+              observedAt > (rootTurnStartedAt ?? -.infinity),
+              observedAt > (lastRootResponseAt ?? -.infinity) else {
+            return
+        }
+        rootTurnStartedAt = observedAt
+        hasAgentActivityInCurrentTurn = false
+    }
+
+    mutating func consumeRootResponse(at observedAt: TimeInterval) -> Bool {
+        guard observedAt.isFinite,
+              observedAt >= (rootTurnStartedAt ?? -.infinity),
+              observedAt > (lastRootResponseAt ?? -.infinity) else {
+            return false
+        }
+        let hadAgentActivity = hasAgentActivityInCurrentTurn
+        hasAgentActivityInCurrentTurn = false
+        lastRootResponseAt = observedAt
+        return hadAgentActivity
+    }
+
+    mutating func observeStop(
+        agentID: String,
+        at observedAt: TimeInterval
+    ) -> SubagentStopObservation {
+        guard isValid(agentID: agentID, observedAt: observedAt),
+              observedAt >= (rootTurnStartedAt ?? -.infinity),
+              observedAt > (agents[agentID]?.observedAt ?? -.infinity) else {
+            return SubagentStopObservation(
+                shouldPresentIndividualCompletion: false,
+                completedAllActiveAgents: false
+            )
+        }
+
+        let previous = agents[agentID]
+        let hadActiveAgent = previous?.isActive == true
+        let hadAnyActiveAgents = !activeAgentIDs.isEmpty
+        agents[agentID] = SubagentHookAgentState(
+            isActive: false,
+            observedAt: observedAt
+        )
+        let hasNoActiveAgents = activeAgentIDs.isEmpty
+        pruneCompletedAgentsIfNeeded()
+        let mayNotifyForCurrentTurn = isInsideCurrentRootTurn(observedAt)
+        let rootAlreadyRespondedToCurrentTurn: Bool
+        if let rootTurnStartedAt {
+            rootAlreadyRespondedToCurrentTurn =
+                (lastRootResponseAt ?? -.infinity) >= rootTurnStartedAt
+        } else {
+            rootAlreadyRespondedToCurrentTurn = lastRootResponseAt != nil
+        }
+        return SubagentStopObservation(
+            // An unmatched first Stop is useful for per-agent attention after
+            // launching mid-run, but only before a root response. Once the
+            // root has responded, require a matched active identity.
+            shouldPresentIndividualCompletion:
+                mayNotifyForCurrentTurn &&
+                    (hadActiveAgent ||
+                        (previous == nil && !rootAlreadyRespondedToCurrentTurn)),
+            completedAllActiveAgents:
+                mayNotifyForCurrentTurn && hadActiveAgent &&
+                    hadAnyActiveAgents && hasNoActiveAgents
+        )
+    }
+
+    private func isValid(agentID: String, observedAt: TimeInterval) -> Bool {
+        !agentID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            agentID.count <= 256 && observedAt.isFinite
+    }
+
+    private func isInsideCurrentRootTurn(_ observedAt: TimeInterval) -> Bool {
+        observedAt >= (rootTurnStartedAt ?? -.infinity) &&
+            observedAt > (lastRootResponseAt ?? -.infinity)
+    }
+
+    private mutating func pruneCompletedAgentsIfNeeded() {
+        guard agents.count > 512 else { return }
+        let completed = agents
+            .filter { !$0.value.isActive }
+            .sorted { $0.value.observedAt < $1.value.observedAt }
+        for (agentID, _) in completed.prefix(agents.count - 512) {
+            agents.removeValue(forKey: agentID)
+        }
     }
 }
 

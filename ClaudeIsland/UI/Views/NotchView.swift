@@ -369,18 +369,7 @@ struct NotchView: View {
                 sessionMonitor?.instances ?? []
             }
             quietHoursMonitor.configure(quietHoursSchedule)
-            previousSubagentCompletionTokens = Dictionary(
-                uniqueKeysWithValues: sessionMonitor.instances.compactMap {
-                    session -> (String, NotchSubagentCompletionToken)? in
-                    guard let token =
-                        NotchAttentionPolicy.subagentCompletionToken(
-                            for: session
-                        ) else {
-                        return nil
-                    }
-                    return (session.sessionId, token)
-                }
-            )
+            seedAgentTeamCompletionTokens(sessionMonitor.instances)
             sessionMonitor.startMonitoring()
             viewModel.updateVisibleSessionCount(sessionMonitor.instances.count)
             updateIdleVisibility()
@@ -402,6 +391,9 @@ struct NotchView: View {
         }
         .onChange(of: preferences.idleBehavior) { _, _ in
             updateIdleVisibility()
+        }
+        .onChange(of: preferences.agentTeamCompletionTiming) { _, _ in
+            seedAgentTeamCompletionTokens(sessionMonitor.instances)
         }
         .onChange(of: preferences.completionCompactDuration) { _, _ in
             rescheduleCompletionVisibilityExpiries()
@@ -1127,17 +1119,28 @@ struct NotchView: View {
 
         for session in instances {
             guard let token =
-                NotchAttentionPolicy.subagentCompletionToken(for: session)
+                NotchAttentionPolicy.subagentCompletionToken(
+                    for: session,
+                    timing: preferences.agentTeamCompletionTiming
+                )
             else {
                 continue
             }
-            let previousGeneration = nextTokens[token.sessionId]?.generation ?? 0
+            let tokenKey = subagentTokenKey(for: token)
+            let previousGeneration = nextTokens[tokenKey]?.generation ?? 0
             guard token.generation > previousGeneration else { continue }
-            nextTokens[token.sessionId] = token
+            nextTokens[tokenKey] = token
 
             // If the root has already stopped, its completion event owns the
-            // attention. Do not replay an earlier teammate event afterward.
-            guard session.completedAt == nil,
+            // attention unless a tracked active agent genuinely finishes
+            // afterward; old/unmatched teammate events cannot replay it.
+            let isRootResponse = token.kind == .rootResponse
+            let isAfterRootCompletion = session.completedAt.map {
+                token.completedAt > $0
+            } ?? true
+            guard (isRootResponse
+                    ? session.completedAt == token.completedAt
+                    : isAfterRootCompletion),
                   NotchAttentionPolicy.shouldPresent(
                     token,
                     presentationStartedAt: attentionTrackingStartedAt,
@@ -1185,6 +1188,28 @@ struct NotchView: View {
         activityCoordinator.hideActivity()
         scheduleCompletionPanelCollapse(
             startedAt: latestCompletion.completedAt
+        )
+    }
+
+    private func subagentTokenKey(
+        for token: NotchSubagentCompletionToken
+    ) -> String {
+        "\(token.sessionId)#\(token.kind.rawValue)"
+    }
+
+    private func seedAgentTeamCompletionTokens(_ instances: [SessionState]) {
+        previousSubagentCompletionTokens = Dictionary(
+            uniqueKeysWithValues: instances.compactMap {
+                session -> (String, NotchSubagentCompletionToken)? in
+                guard let token =
+                    NotchAttentionPolicy.subagentCompletionToken(
+                        for: session,
+                        timing: preferences.agentTeamCompletionTiming
+                    ) else {
+                    return nil
+                }
+                return (subagentTokenKey(for: token), token)
+            }
         )
     }
 

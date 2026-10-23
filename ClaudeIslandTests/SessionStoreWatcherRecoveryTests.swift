@@ -112,13 +112,19 @@ final class SessionStoreWatcherRecoveryTests: XCTestCase {
             ]], to: snapshot)
         }
 
-        func writeBridgeSession() throws {
-            try writeJSON([
+        func writeBridgeSession(
+            subagentAgents: [String: Any]? = nil
+        ) throws {
+            var payload: [String: Any] = [
                 "version": 1, "session_id": id, "cwd": root.path,
                 "source": "claude", "event": "PreToolUse", "status": "running_tool",
                 "pid": ProcessInfo.processInfo.processIdentifier,
                 "observed_at": observedAt.timeIntervalSince1970
-            ], to: bridge.appendingPathComponent("fixture.json"))
+            ]
+            if let subagentAgents {
+                payload["subagent_agents"] = subagentAgents
+            }
+            try writeJSON(payload, to: bridge.appendingPathComponent("fixture.json"))
         }
 
         func writeTranscript(completed: Bool) throws {
@@ -215,6 +221,38 @@ final class SessionStoreWatcherRecoveryTests: XCTestCase {
         XCTAssertTrue(watcher.watching.contains(fixture.id))
         await store.process(.sessionEnded(sessionId: fixture.id))
         XCTAssertTrue(watcher.watching.isEmpty)
+    }
+
+    func testOfflineBridgeSnapshotRestoresActiveSubagentIdentitySet() async throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try fixture.writeBridgeSession(subagentAgents: [
+            "agent-a": ["active": true, "observed_at": fixture.observedAt.timeIntervalSince1970],
+            "agent-b": ["active": false, "observed_at": fixture.observedAt.timeIntervalSince1970]
+        ])
+        let bridgeFile = fixture.bridge.appendingPathComponent("fixture.json")
+        var payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: bridgeFile))
+                as? [String: Any]
+        )
+        payload["subagent_turn_had_agents"] = true
+        payload["subagent_turn_started_at"] =
+            fixture.observedAt.addingTimeInterval(-1).timeIntervalSince1970
+        try fixture.writeJSON(payload, to: bridgeFile)
+        try fixture.writeTranscript(completed: false)
+        let watcher = RecoveryWatcher()
+        let store = fixture.store(watcher: watcher)
+        await store.startPeriodicStatusCheck()
+        let session = try await waitForRestore(store, id: fixture.id, watcher: watcher)
+        await store.stopPeriodicStatusCheck()
+
+        XCTAssertEqual(session.subagentHookState.activeAgentIDs, ["agent-a"])
+        XCTAssertTrue(session.subagentHookState.hasAgentActivityInCurrentTurn)
+        XCTAssertEqual(
+            session.subagentHookState.rootTurnStartedAt,
+            fixture.observedAt.addingTimeInterval(-1).timeIntervalSince1970
+        )
+        await store.process(.sessionEnded(sessionId: fixture.id))
     }
 
     func testTranscriptCompletionOverridesWorkingSnapshotWithoutStartingWatcher() async throws {

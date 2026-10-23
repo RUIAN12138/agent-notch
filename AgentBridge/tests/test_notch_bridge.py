@@ -217,6 +217,131 @@ class SyntheticTranscriptTests(unittest.TestCase):
 
 
 class SessionSnapshotTests(unittest.TestCase):
+    def test_snapshot_pairs_parallel_agent_ids_and_rejects_out_of_order_start(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict(
+            os.environ, {"HOME": home}, clear=False
+        ):
+            events = [
+                ("SubagentStart", "agent-a", 100),
+                ("SubagentStart", "agent-b", 101),
+                ("SubagentStop", "agent-a", 103),
+                # This process acquired the state lock after the Stop despite
+                # observing its event earlier; it must not revive agent-a.
+                ("SubagentStart", "agent-a", 102),
+            ]
+            path = None
+            for event, agent_id, observed_at in events:
+                path = BRIDGE.persist_session_snapshot({
+                    "session_id": "session-agents",
+                    "cwd": "/tmp/demo",
+                    "source": "claude",
+                    "event": event,
+                    "status": "processing",
+                    "pid": 123,
+                    "agent_id": agent_id,
+                }, observed_at=observed_at)
+
+            payload = json.loads(Path(path).read_text())
+            self.assertEqual(payload["observed_at"], 103)
+            self.assertEqual(payload["event"], "SubagentStop")
+            self.assertTrue(payload["subagent_agents"]["agent-a"]["active"] is False)
+            self.assertEqual(
+                payload["subagent_agents"]["agent-a"]["observed_at"], 103
+            )
+            self.assertTrue(payload["subagent_agents"]["agent-b"]["active"])
+
+            BRIDGE.persist_session_snapshot({
+                "session_id": "session-agents",
+                "cwd": "/tmp/demo",
+                "source": "claude",
+                "event": "SubagentStop",
+                "status": "processing",
+                "pid": 123,
+                "agent_id": "agent-b",
+            }, observed_at=104)
+            payload = json.loads(Path(path).read_text())
+            self.assertFalse(payload["subagent_agents"]["agent-a"]["active"])
+            self.assertFalse(payload["subagent_agents"]["agent-b"]["active"])
+            self.assertEqual(Path(path).stat().st_mode & 0o777, 0o600)
+
+    def test_snapshot_tracks_agent_activity_until_the_matching_root_response(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict(
+            os.environ, {"HOME": home}, clear=False
+        ):
+            base = {
+                "session_id": "session-root-response",
+                "cwd": "/tmp/demo",
+                "source": "claude",
+                "status": "processing",
+                "pid": 123,
+            }
+            path = BRIDGE.persist_session_snapshot({
+                **base, "event": "UserPromptSubmit"
+            }, observed_at=10)
+            BRIDGE.persist_session_snapshot({
+                **base, "event": "SubagentStart", "agent_id": "agent-a"
+            }, observed_at=11)
+            # The current prompt hook can arrive after its later child hook.
+            BRIDGE.persist_session_snapshot({
+                **base, "event": "UserPromptSubmit"
+            }, observed_at=10.5)
+            payload = json.loads(Path(path).read_text())
+            self.assertTrue(payload["subagent_turn_had_agents"])
+            self.assertEqual(payload["subagent_turn_started_at"], 10.5)
+
+            BRIDGE.persist_session_snapshot({
+                **base, "event": "Stop", "status": "waiting_for_input"
+            }, observed_at=12)
+            payload = json.loads(Path(path).read_text())
+            self.assertFalse(payload["subagent_turn_had_agents"])
+            self.assertEqual(payload["subagent_root_stopped_at"], 12)
+
+            # A start from the previous turn, delivered late, cannot re-arm it.
+            BRIDGE.persist_session_snapshot({
+                **base, "event": "SubagentStart", "agent_id": "agent-old"
+            }, observed_at=11.5)
+            payload = json.loads(Path(path).read_text())
+            self.assertFalse(payload["subagent_turn_had_agents"])
+
+            BRIDGE.persist_session_snapshot({
+                **base, "event": "UserPromptSubmit"
+            }, observed_at=13)
+            BRIDGE.persist_session_snapshot({
+                **base, "event": "SubagentStart", "agent_id": "agent-b"
+            }, observed_at=14)
+            payload = json.loads(Path(path).read_text())
+            self.assertTrue(payload["subagent_turn_had_agents"])
+            self.assertEqual(payload["subagent_turn_started_at"], 13)
+
+    def test_subagent_event_forwards_agent_id_to_native_socket(self):
+        payload = {
+            "session_id": "session-agent-wire",
+            "cwd": "/tmp/demo",
+            "hook_event_name": "SubagentStart",
+            "agent_id": "agent-wire-id",
+        }
+        with patch.object(
+            BRIDGE.sys,
+            "argv",
+            ["notch-bridge.py", "--source", "claude"],
+        ), patch.object(
+            BRIDGE.sys, "stdin", io.StringIO(json.dumps(payload))
+        ), patch.object(
+            BRIDGE, "get_tty", return_value=None
+        ), patch.object(
+            BRIDGE, "process_expired_cleanups"
+        ), patch.object(
+            BRIDGE, "write_synthetic"
+        ), patch.object(
+            BRIDGE, "persist_session_snapshot"
+        ), patch.object(
+            BRIDGE, "send_event", return_value=True
+        ) as send_event, self.assertRaises(SystemExit) as exit_context:
+            BRIDGE.main()
+
+        self.assertEqual(exit_context.exception.code, 0)
+        self.assertEqual(send_event.call_args.args[1]["agent_id"], "agent-wire-id")
+
     def test_snapshot_is_private_and_excludes_prompt_and_tool_input(self):
         with tempfile.TemporaryDirectory() as home, patch.dict(
             os.environ, {"HOME": home}, clear=False

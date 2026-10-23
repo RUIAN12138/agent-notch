@@ -83,6 +83,21 @@ enum IdleNotchBehavior: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// When a parallel Claude team should claim the notch's completion attention.
+/// Root-session completion remains governed by the independent task setting.
+enum AgentTeamCompletionTiming: String, CaseIterable, Hashable, Identifiable, Sendable {
+    case disabled
+    case everyCompletion
+    case allAgentsFinished
+    case rootResponse
+
+    var id: String { rawValue }
+
+    var expandsForSubagentCompletion: Bool {
+        self != .disabled
+    }
+}
+
 enum AppLanguage: String, CaseIterable, Identifiable {
     case english
     case simplifiedChinese
@@ -215,7 +230,9 @@ final class NotchPreferences: ObservableObject {
         static let expandQuestionsAutomatically =
             "notchExpandQuestionsAutomatically"
         static let expandOnTaskCompletion = "notchExpandOnTaskCompletion"
-        static let expandOnAgentTeamCompletion =
+        static let agentTeamCompletionTiming =
+            "notchAgentTeamCompletionTiming"
+        static let legacyExpandOnAgentTeamCompletion =
             "notchExpandOnAgentTeamCompletion"
         static let completionCompactDuration = "notchCompletionCompactDuration"
         static let followUpRemindersEnabled = "notchFollowUpRemindersEnabled"
@@ -287,16 +304,19 @@ final class NotchPreferences: ObservableObject {
         }
     }
 
-    /// A teammate finishing is distinct from the root task finishing. Keep
-    /// this opt-in so internal agent work cannot unexpectedly take over the
+    /// Controls whether a teammate completion can expand the panel and when.
+    /// The default remains off to avoid internal agent work taking over the
     /// user's current screen.
-    @Published var expandOnAgentTeamCompletion: Bool {
+    @Published var agentTeamCompletionTiming: AgentTeamCompletionTiming {
         didSet {
-            defaults.set(
-                expandOnAgentTeamCompletion,
-                forKey: Keys.expandOnAgentTeamCompletion
-            )
+            defaults.set(agentTeamCompletionTiming.rawValue,
+                         forKey: Keys.agentTeamCompletionTiming)
         }
+    }
+
+    /// Compatibility view retained for existing attention policy callers.
+    var expandOnAgentTeamCompletion: Bool {
+        agentTeamCompletionTiming.expandsForSubagentCompletion
     }
 
     @Published var completionCompactDuration: Double {
@@ -456,9 +476,19 @@ final class NotchPreferences: ObservableObject {
         expandOnTaskCompletion =
             defaults.object(forKey: Keys.expandOnTaskCompletion) as? Bool
             ?? false
-        expandOnAgentTeamCompletion =
-            defaults.object(forKey: Keys.expandOnAgentTeamCompletion) as? Bool
-            ?? false
+        if let rawTiming = defaults.string(
+            forKey: Keys.agentTeamCompletionTiming
+        ), let timing = AgentTeamCompletionTiming(rawValue: rawTiming) {
+            agentTeamCompletionTiming = timing
+        } else if defaults.object(
+            forKey: Keys.legacyExpandOnAgentTeamCompletion
+        ) as? Bool == true {
+            // Preserve an explicit opt-in from releases that had only an
+            // on/off switch.
+            agentTeamCompletionTiming = .everyCompletion
+        } else {
+            agentTeamCompletionTiming = .disabled
+        }
         completionCompactDuration =
             defaults.object(forKey: Keys.completionCompactDuration) as? Double ?? 8
         followUpRemindersEnabled =

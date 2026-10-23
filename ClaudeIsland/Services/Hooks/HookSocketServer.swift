@@ -30,6 +30,7 @@ struct HookEvent: Codable, Sendable {
     let notificationType: String?
     let message: String?
     let responseTimeoutSeconds: Double?
+    let agentId: String?
     /// Assigned by the native server, never decoded from or encoded onto the wire.
     var permissionRequestID: UUID? = nil
 
@@ -41,11 +42,12 @@ struct HookEvent: Codable, Sendable {
         case toolUseId = "tool_use_id"
         case notificationType = "notification_type"
         case responseTimeoutSeconds = "response_timeout_seconds"
+        case agentId = "agent_id"
         case message
     }
 
     /// Create a copy with updated toolUseId
-    init(sessionId: String, cwd: String, event: String, status: String, observedAt: TimeInterval?, source: String?, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, responseTimeoutSeconds: Double? = nil) {
+    init(sessionId: String, cwd: String, event: String, status: String, observedAt: TimeInterval?, source: String?, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, responseTimeoutSeconds: Double? = nil, agentId: String? = nil) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.event = event
@@ -60,6 +62,7 @@ struct HookEvent: Codable, Sendable {
         self.notificationType = notificationType
         self.message = message
         self.responseTimeoutSeconds = responseTimeoutSeconds
+        self.agentId = agentId
     }
 
     var sessionPhase: SessionPhase {

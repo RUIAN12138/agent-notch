@@ -60,9 +60,11 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 
 重新读取已导入的 REA 静态证据（共 26 条记录）后，`ev_28b3fbaad320405079e7b244b28417a3c315ebb5ac80873a3e72c30c840c10ea` 中还观察到 Vibe Island 设置资源提供“每个子 Agent 完成 / 全部完成 / 主 Agent 回复”三种通知时机，且 Team 自动展开默认关闭、无完成提示音。这些是包内资源文字，不证明竞品运行时状态机的具体实现。
 
-Agent Notch 本轮落地其中协议可直接证明的第一段：增加默认关闭的“队友完成时展开”，只在生命周期裁决接受新的 `SubagentStop` 时记录独立事件代次；主 Agent 的 `Stop` 仍然单独决定根会话是否完成。提示使用 Hook 源时间戳计算现有停留时间，不播放声音，静音规则、审批/问题优先级、用户拥有的展开面板和全屏准入仍然有效。生命周期拒绝的迟到 `SubagentStop` 不更新提醒代次；相同时间戳重复事件是幂等的；事件代次保存在内存中，避免重启后重播旧的队友完成提醒。
+协议核验后发现，Claude Code 官方 Hook 文档明确给 `SubagentStart` 与 `SubagentStop` 提供稳定 `agent_id`；`SubagentStop` 的 `agent_id` 与类型可用于匹配对应子 Agent。参见[官方 Hooks reference](https://code.claude.com/docs/en/hooks) 中的 `SubagentStart input`、`SubagentStop input` 和 common input fields。Agent Notch 现在将该 ID 从 Bridge 传入 HookEvent，并在私有 Bridge 快照中以锁保护的原子读改写保留每个 ID 最近的活动状态与事件时间，应用在中途启动或重启时可恢复当前并行集合。Swift 状态机按 ID 配对开始/结束，忽略同一 ID 的重复 Stop 和更旧的 Start；只有已观察到至少一个匹配的活动 ID、且最后一个活动 ID 被结束时，才生成“全部完成”代次。无法确认身份时不会伪造全完成。
 
-本轮没有实现“全部完成”或“主 Agent 回复”选项：当前 Hook 传输未提供可可靠配对所有并行队友的 ID/集合，不能据此正确判定最后一个队友。本轮运行 `SubagentCompletionAttentionTests`、`SessionStoreLifecycleTests`、`NotchCompletionExpansionTests`、`NotchPresentationTimingTests` 和 `NotchFullScreenTests`：51 passed、0 failed、0 skipped。它验证状态策略和 Store 事件边界，不是已安装应用/真实 Hook 回合验收。
+设置现提供默认关闭的“关闭 / 每个子 Agent / 全部完成后 / 主 Agent 回复时”。旧版显式开启的布尔偏好迁移为“每个子 Agent”；“主 Agent 回复时”只在本轮已观测到 SubagentStart 后，等根 `Stop` 才生成独立提醒，不会把没有子 Agent 的普通完成误判为队友提醒。根 Agent `Stop` 独立决定会话是否完成。若根 `Stop` 已先到，但本轮某个精确匹配且仍活动的子 Agent 随后完成，按“每个子 Agent / 全部完成后”策略仍可生成队友提醒；这不会重新打开根回合，也不会改变会话完成状态。没有匹配到本轮活动 ID 的迟到/重复事件不生成提醒。提示使用 Hook 源时间戳计算现有停留时间，不播放声音，静音规则、审批/问题优先级、用户拥有的展开面板和全屏准入仍然有效。
+
+已识别的 Hook 版本在 Claude Code `2.0.43+` 注册 `SubagentStart`；版本未知或旧版本不假定“全部完成”可用，而是保持安全降级。Bridge 全套 Python 测试为 91 项通过；Swift 回归覆盖 ID 解码、并行集合归零、重复 Stop、乱序 Start、根回复时机、离线快照恢复和旧设置迁移。托管 XCTest 结果是状态/协议回归证据，不是已安装应用或真实 Hook 回合验收。
 
 ## 对用户提供的旧风险审查的当前核验
 
@@ -86,7 +88,7 @@ Agent Notch 本轮落地其中协议可直接证明的第一段：增加默认�
 
 - **已采用**：Boring Notch 的可撤销 hover 时序原则已独立实现；其 0.3 秒进入等待和 100ms 退出复核启发了 Agent Notch 的新默认值（0.3 秒进入、0.2 秒退出），同时保留 Agent Notch 自己的指针代次防竞态与扩大后的几何命中边界。
 - **已修复**：完成事件不再误收起仍有自动展开资格的审批/提问面板；依据是 Agent Notch 源码复现与回归测试，不声称这是 Vibe Island 私有实现的逆向结论。
-- **新增可选策略**：Vibe Island 安装包静态资源展示根任务与 Team 队友完成自动展开，以及三种子 Agent 通知时机；Agent Notch 已实现默认关闭的根任务完成和队友完成展开，并复用既有停留时长自动收起，保留审批、用户所有权和全屏策略优先级。全部子 Agent 汇聚及仅根回复时通知暂缓，待 Hook 身份协议能够可靠识别完整并行集合后再设计。
+- **新增可选策略**：Vibe Island 安装包静态资源展示根任务与 Team 队友完成自动展开，以及三种子 Agent 通知时机；Agent Notch 已实现默认关闭的根任务完成和队友完成展开，并复用既有停留时长自动收起，保留审批、用户所有权和全屏策略优先级。基于 Claude Hook 的精确 `agent_id`，队友提醒已支持“每个子 Agent / 全部完成后 / 主 Agent 回复时”三种时机；有效的本轮活动子 Agent 即使在根 Agent 已结束响应后才完成，也只生成队友提醒，不复活根会话状态。
 - **候选但暂缓**：Vibe Island 的平台化 RemoteAgent manifest 与版本/散列清单可作为未来分发设计参考；当前不引入 SSH/远程执行能力，避免在核心状态与审批可靠性尚需真实运行验收时扩张权限面。
 - **暂不采用**：Vibe Island 的价格数据资源；Agent Notch 已有订阅用量与会话 token 数据，但没有经过验证的跨模型成本口径，本轮也不扩展该功能。
 - **未验证**：Vibe Island 的真实展开/收起、Agent 状态与审批交互。REA residual unknown `unk_055a4d687c6b84aff4d6bfdb2cc58b8da51794c7c245ccb8d34ed25647e99186` 要求 controlled replay；后续若要启动竞品 app，须在动作时确认，并避免登录、授权系统控制、触发终端控制或远程资产下载。
