@@ -4,7 +4,7 @@
   <h1>Agent Notch</h1>
   <p>在 MacBook 刘海中统一查看、切换和处理本地 AI 编程任务。</p>
 
-  [![CI](https://github.com/lihao505/agent-notch/actions/workflows/ci.yml/badge.svg)](https://github.com/lihao505/agent-notch/actions/workflows/ci.yml)
+  [![CI](https://github.com/RUIAN12138/agent-notch/actions/workflows/ci.yml/badge.svg)](https://github.com/RUIAN12138/agent-notch/actions/workflows/ci.yml)
   [![License](https://img.shields.io/badge/license-Apache--2.0-34d399.svg)](LICENSE.md)
 </div>
 
@@ -73,7 +73,7 @@ CodeBuddy 在完成发布清单中的真实会话验收前始终保持 Experimen
 ## 源码构建
 
 ```bash
-git clone https://github.com/lihao505/agent-notch.git
+git clone https://github.com/RUIAN12138/agent-notch.git
 cd agent-notch
 xcodebuild \
   -project ClaudeIsland.xcodeproj \

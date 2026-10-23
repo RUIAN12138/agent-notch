@@ -20,7 +20,7 @@
 
     <!-- Sparkle Update Configuration -->
     <key>SUFeedURL</key>
-    <string>https://github.com/lihao505/agent-notch/releases/latest/download/appcast.xml</string>
+    <string>https://github.com/RUIAN12138/agent-notch/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
     <string>n7FnG6HZeHLpPapu3pwnkZl/ghCUNUbjGBbeysfns80=</string>
     <key>SUEnableAutomaticChecks</key>

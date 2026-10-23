@@ -13,14 +13,14 @@
 
 - [x] 产品名改为 Agent Notch
 - [x] Bundle ID 改为 `io.github.lihao505.AgentNotch`
-- [x] 更新源改为 `lihao505/agent-notch`
+- [x] 更新源统一为 `RUIAN12138/agent-notch`（旧 `lihao505/agent-notch` 地址由 GitHub 重定向）
 - [x] 默认关闭未配置密钥的自动更新
 - [x] 保留 Apache-2.0 LICENSE 与 NOTICE
 - [x] 为本轮修改的上游文本源文件加入显著修改声明
 - [x] 将固定 revision 的第三方完整许可证纳入仓库与 App Resources
 - [x] 记录自制图标和像素素材来源
 - [x] 加入隐私、安全、贡献和第三方依赖说明
-- [x] 创建 `lihao505/agent-notch` 并启用 Security Advisory
+- [x] 公开仓库已启用 Security Advisory
 - [x] 敏感文件名与常见密钥格式扫描通过
 - [x] README 明确当前仅提供源码构建，未签名、未公证
 - [x] 将 Agent Bridge vendored 到主仓库并加入 CI

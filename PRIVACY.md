@@ -72,5 +72,5 @@ Hook 不应被删除。`AgentBridge/uninstall.sh` 会移除 `~/.multiagent-notch
 
 ## 联系
 
-请通过 <https://github.com/lihao505/agent-notch/issues> 提交隐私问题。不要在公开
+请通过 <https://github.com/RUIAN12138/agent-notch/issues> 提交隐私问题。不要在公开
 Issue 中附上会话内容、凭据或其他敏感信息。

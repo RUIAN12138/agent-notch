@@ -222,7 +222,7 @@ grep -Eq 'PRODUCT_BUNDLE_IDENTIFIER = io\.github\.lihao505\.AgentNotch;' \
     fail "Agent Notch bundle identifier is not configured"
 grep -Eq '<string>Agent Notch</string>' ClaudeIsland/Info.plist ||
     fail "Agent Notch display name is not configured"
-grep -Eq 'lihao505/agent-notch/releases/latest/download/appcast\.xml' ClaudeIsland/Info.plist ||
+grep -Eq 'RUIAN12138/agent-notch/releases/latest/download/appcast\.xml' ClaudeIsland/Info.plist ||
     fail "owned update feed is not configured"
 if grep -En 'DEVELOPMENT_TEAM = 2DKS5U9LV4;' ClaudeIsland.xcodeproj/project.pbxproj; then
     fail "upstream Apple Developer team is still configured"
