@@ -64,6 +64,12 @@ enum NotchCompletionPanelCollapseDecision: Equatable {
     case discard
 }
 
+enum NotchSubagentCompletionDisposition: Equatable {
+    case present
+    case deferUntilHigherPriorityStateResolves
+    case discard
+}
+
 enum NotchAttentionPolicy {
     static func completionDwellRemaining(
         startedAt: Date,
@@ -272,6 +278,50 @@ enum NotchAttentionPolicy {
         return token.completedAt >= presentationStartedAt &&
             age >= -5 &&
             age < duration
+    }
+
+    static func subagentCompletionDisposition(
+        _ token: NotchSubagentCompletionToken,
+        for session: SessionState,
+        presentationStartedAt: Date,
+        duration: TimeInterval,
+        now: Date = Date(),
+        isSilenced: Bool,
+        expandOnAgentTeamCompletion: Bool,
+        status: NotchStatus,
+        openReason: NotchOpenReason,
+        hasPendingAutoExpandedInteraction: Bool
+    ) -> NotchSubagentCompletionDisposition {
+        let isRootResponse = token.kind == .rootResponse
+        let isAfterRootCompletion = session.completedAt.map {
+            token.completedAt > $0
+        } ?? true
+        guard (isRootResponse
+                ? session.completedAt == token.completedAt
+                : isAfterRootCompletion),
+              shouldPresent(
+                token,
+                presentationStartedAt: presentationStartedAt,
+                duration: duration,
+                now: now
+              ),
+              !isSilenced,
+              expandOnAgentTeamCompletion else {
+            return .discard
+        }
+
+        // A transient notch pop is not a reason to lose an otherwise fresh
+        // event. Re-evaluate it once the transition reaches a stable state.
+        if hasPendingAutoExpandedInteraction || status == .popping {
+            return .deferUntilHigherPriorityStateResolves
+        }
+
+        return shouldAutoExpandOnAgentTeamCompletion(
+            expandOnAgentTeamCompletion: expandOnAgentTeamCompletion,
+            status: status,
+            openReason: openReason,
+            hasPendingAutoExpandedInteraction: false
+        ) ? .present : .discard
     }
 
     static func isStillCurrent(

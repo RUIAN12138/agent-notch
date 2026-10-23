@@ -57,6 +57,59 @@ final class SubagentCompletionAttentionTests: XCTestCase {
         XCTAssertFalse(shouldExpand(hasPendingInteraction: true))
     }
 
+    func testTeamCompletionWaitsBehindApprovalThenPresentsBeforeItsDeadline() throws {
+        let completedAt = Date(timeIntervalSince1970: 1_000)
+        let trackingStartedAt = completedAt.addingTimeInterval(-1)
+        var session = SessionState(
+            sessionId: "deferred-team-completion",
+            cwd: "/tmp/deferred-team-completion",
+            phase: .processing
+        )
+        session.recordSubagentCompletion(at: completedAt)
+        let token = try XCTUnwrap(
+            NotchAttentionPolicy.subagentCompletionToken(for: session)
+        )
+
+        func disposition(
+            now: Date = Date(timeIntervalSince1970: 1_002),
+            status: NotchStatus = .opened,
+            reason: NotchOpenReason = .notification,
+            enabled: Bool = true,
+            silenced: Bool = false,
+            hasPendingInteraction: Bool = false
+        ) -> NotchSubagentCompletionDisposition {
+            NotchAttentionPolicy.subagentCompletionDisposition(
+                token,
+                for: session,
+                presentationStartedAt: trackingStartedAt,
+                duration: 8,
+                now: now,
+                isSilenced: silenced,
+                expandOnAgentTeamCompletion: enabled,
+                status: status,
+                openReason: reason,
+                hasPendingAutoExpandedInteraction: hasPendingInteraction
+            )
+        }
+
+        XCTAssertEqual(
+            disposition(hasPendingInteraction: true),
+            .deferUntilHigherPriorityStateResolves
+        )
+        XCTAssertEqual(disposition(), .present)
+        XCTAssertEqual(
+            disposition(status: .popping),
+            .deferUntilHigherPriorityStateResolves
+        )
+        XCTAssertEqual(disposition(reason: .click), .discard)
+        XCTAssertEqual(disposition(enabled: false), .discard)
+        XCTAssertEqual(disposition(silenced: true), .discard)
+        XCTAssertEqual(
+            disposition(now: completedAt.addingTimeInterval(8)),
+            .discard
+        )
+    }
+
     func testSubagentCompletionTokenUsesHookBoundaryAndExpiresOnDwell() throws {
         let completedAt = Date(timeIntervalSince1970: 100)
         var session = SessionState(
@@ -293,7 +346,12 @@ final class SubagentCompletionAttentionTests: XCTestCase {
         let session = try XCTUnwrap(snapshot)
         XCTAssertEqual(session.subagentCompletionGeneration, 2)
         XCTAssertEqual(session.allSubagentsFinishedGeneration, 1)
-        XCTAssertEqual(session.lastSubagentCompletedAt, completionAt)
+        XCTAssertEqual(
+            try XCTUnwrap(session.lastSubagentCompletedAt)
+                .timeIntervalSince(completionAt),
+            0,
+            accuracy: 0.001
+        )
     }
 
     func testRootResponseTimingOnlyCreatesTeamAttentionAfterSubagentActivity() async throws {

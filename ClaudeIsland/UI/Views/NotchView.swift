@@ -377,6 +377,9 @@ struct NotchView: View {
         }
         .onChange(of: viewModel.status) { oldStatus, newStatus in
             handleStatusChange(from: oldStatus, to: newStatus)
+            if oldStatus == .popping && newStatus != .popping {
+                handleAgentTeamCompletionChange(sessionMonitor.instances)
+            }
         }
         .onChange(of: sessionMonitor.pendingInstances) { _, sessions in
             handlePendingSessionsChange(sessions)
@@ -951,6 +954,7 @@ struct NotchView: View {
         }
 
         previousInteractionTokens = currentTokens
+        handleAgentTeamCompletionChange(sessionMonitor.instances)
         resumeCompletionPanelCollapseIfNeeded()
     }
 
@@ -1117,6 +1121,12 @@ struct NotchView: View {
             now.timeIntervalSince($0.value.completedAt) < 60
         }
         var presentableTokens: [NotchSubagentCompletionToken] = []
+        let hasPendingAutoExpandedInteraction =
+            NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
+                in: instances,
+                expandQuestionsAutomatically:
+                    preferences.expandQuestionsAutomatically
+            )
 
         for session in instances {
             guard let token =
@@ -1130,50 +1140,38 @@ struct NotchView: View {
             let tokenKey = subagentTokenKey(for: token)
             let previousGeneration = nextTokens[tokenKey]?.generation ?? 0
             guard token.generation > previousGeneration else { continue }
-            nextTokens[tokenKey] = token
 
-            // If the root has already stopped, its completion event owns the
-            // attention unless a tracked active agent genuinely finishes
-            // afterward; old/unmatched teammate events cannot replay it.
-            let isRootResponse = token.kind == .rootResponse
-            let isAfterRootCompletion = session.completedAt.map {
-                token.completedAt > $0
-            } ?? true
-            guard (isRootResponse
-                    ? session.completedAt == token.completedAt
-                    : isAfterRootCompletion),
-                  NotchAttentionPolicy.shouldPresent(
+            let disposition =
+                NotchAttentionPolicy.subagentCompletionDisposition(
                     token,
+                    for: session,
                     presentationStartedAt: attentionTrackingStartedAt,
                     duration: preferences.completionCompactDuration,
-                    now: now
-                  ),
-                  !isSessionSilenced(session) else {
+                    now: now,
+                    isSilenced: isSessionSilenced(session),
+                    expandOnAgentTeamCompletion:
+                        preferences.expandOnAgentTeamCompletion,
+                    status: viewModel.status,
+                    openReason: viewModel.openReason,
+                    hasPendingAutoExpandedInteraction:
+                        hasPendingAutoExpandedInteraction
+                )
+            switch disposition {
+            case .present:
+                nextTokens[tokenKey] = token
+                presentableTokens.append(token)
+            case .deferUntilHigherPriorityStateResolves:
+                // Leave this generation unconsumed. The pending-interaction
+                // or pop-state transition will re-run this decision while the
+                // original event is still within its presentation dwell.
                 continue
+            case .discard:
+                nextTokens[tokenKey] = token
             }
-            presentableTokens.append(token)
         }
         previousSubagentCompletionTokens = nextTokens
 
-        guard preferences.expandOnAgentTeamCompletion,
-              !presentableTokens.isEmpty else {
-            return
-        }
-
-        let hasPendingAutoExpandedInteraction =
-            NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
-                in: instances,
-                expandQuestionsAutomatically:
-                    preferences.expandQuestionsAutomatically
-            )
-        guard NotchAttentionPolicy.shouldAutoExpandOnAgentTeamCompletion(
-            expandOnAgentTeamCompletion:
-                preferences.expandOnAgentTeamCompletion,
-            status: viewModel.status,
-            openReason: viewModel.openReason,
-            hasPendingAutoExpandedInteraction:
-                hasPendingAutoExpandedInteraction
-        ) else {
+        guard !presentableTokens.isEmpty else {
             return
         }
 
