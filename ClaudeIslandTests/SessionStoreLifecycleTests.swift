@@ -568,6 +568,71 @@ final class SessionStoreLifecycleTests: XCTestCase {
         XCTAssertEqual(session.phase, .processing)
     }
 
+    func testDenyingQueuedApprovalPreservesSuccessorAfterLateFailureHook() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false
+        )
+        let sessionId = "deny-queued-approval-\(UUID().uuidString)"
+        let now = Date()
+
+        for (offset, identity, tool) in [
+            (0, "denied-tool", "Bash"),
+            (1, "successor-tool", "Write"),
+        ] {
+            await store.process(.hookReceived(hook(
+                sessionId: sessionId,
+                event: "PermissionRequest",
+                status: "waiting_for_approval",
+                observedAt: now.addingTimeInterval(Double(offset - 3)),
+                tool: tool,
+                toolUseId: identity,
+                toolInput: ["description": AnyCodable("Review \(tool) request")],
+                source: "claude"
+            )))
+        }
+
+        await store.process(.permissionDenied(
+            sessionId: sessionId,
+            toolUseId: "denied-tool",
+            reason: "Please use a safer command.",
+            resolvedAt: now.addingTimeInterval(-1)
+        ))
+
+        // The UI can receive the tool's terminal hook after the local deny
+        // response. That older request must not hide the next queued approval.
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PostToolUseFailure",
+            status: "processing",
+            observedAt: now,
+            tool: "Bash",
+            toolUseId: "denied-tool",
+            source: "claude"
+        )))
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertEqual(session.phase, .waitingForApproval(
+            try XCTUnwrap(session.pendingInteractions.current)
+        ))
+        XCTAssertEqual(session.pendingInteractions.toolUseIds, ["successor-tool"])
+        XCTAssertEqual(session.activePermission?.toolUseId, "successor-tool")
+        XCTAssertEqual(session.activePermission?.toolName, "Write")
+        guard let deniedItem = session.chatItems.first(where: {
+            $0.id == "denied-tool"
+        }), case .toolCall(let deniedTool) = deniedItem.type else {
+            return XCTFail("Expected the denied tool row")
+        }
+        XCTAssertEqual(deniedTool.status, .error)
+        guard let successorItem = session.chatItems.first(where: {
+            $0.id == "successor-tool"
+        }), case .toolCall(let successorTool) = successorItem.type else {
+            return XCTFail("Expected the successor approval row")
+        }
+        XCTAssertEqual(successorTool.status, .waitingForApproval)
+    }
+
     func testDirectPermissionCreatesTrackedPlaceholder() async throws {
         let store = SessionStore(
             persistenceEnabled: false,
