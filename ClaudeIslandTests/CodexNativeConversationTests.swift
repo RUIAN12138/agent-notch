@@ -436,8 +436,15 @@ final class CodexNativeConversationTests: XCTestCase {
         guard case .activeTool(let turnStartedAt, let lastEvidenceAt, let toolStartedAt) = running else {
             return XCTFail("Expected the unmatched tool call to keep the turn active")
         }
+        let initialModificationDate = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]
+                as? Date
+        )
         XCTAssertEqual(turnStartedAt, persistedStartedAt)
-        XCTAssertEqual(lastEvidenceAt, persistedStartedAt)
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(lastEvidenceAt),
+            initialModificationDate.addingTimeInterval(-0.01)
+        )
         XCTAssertEqual(toolStartedAt, persistedStartedAt)
 
         let completedAt = Date()
@@ -464,7 +471,154 @@ final class CodexNativeConversationTests: XCTestCase {
         guard case .active(let finishedTurnStartedAt, let finishedEvidenceAt) = finished else {
             return XCTFail("Expected a completed tool result to clear only the tool marker")
         }
+        let completedModificationDate = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]
+                as? Date
+        )
         XCTAssertEqual(finishedTurnStartedAt, persistedStartedAt)
-        XCTAssertEqual(finishedEvidenceAt, persistedCompletedAt)
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(finishedEvidenceAt),
+            completedModificationDate.addingTimeInterval(-0.01)
+        )
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(finishedEvidenceAt),
+            persistedCompletedAt
+        )
+    }
+
+    func testRecentRolloutWriteKeepsOldTimestampActiveEvidenceFresh() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionId = "active-rollout-recent-write"
+        let url = try rolloutURL(root: root, sessionId: sessionId)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let oldStartedAt = Date().addingTimeInterval(-20 * 60)
+        let startedAtString = formatter.string(from: oldStartedAt)
+        let persistedStartedAt = try XCTUnwrap(
+            formatter.date(from: startedAtString)
+        )
+        let taskStarted: [String: Any] = [
+            "timestamp": startedAtString,
+            "type": "event_msg",
+            "payload": ["type": "task_started"]
+        ]
+        try writeLines([
+            try encoded(metadata(sessionId: sessionId, cwd: "/tmp/active-rollout")),
+            try encoded(taskStarted)
+        ], to: url)
+
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: url.path
+        )
+        let fileModifiedAt = try XCTUnwrap(
+            attributes[.modificationDate] as? Date
+        )
+        let parser = ConversationParser(codexSessionsRoot: root)
+        let lifecycle = await parser.codexTaskLifecycle(sessionId: sessionId)
+        guard case .active(let turnStartedAt, let lastEvidenceAt) = lifecycle else {
+            return XCTFail("Expected the native rollout to remain active")
+        }
+
+        XCTAssertEqual(turnStartedAt, persistedStartedAt)
+        XCTAssertGreaterThanOrEqual(
+            try XCTUnwrap(lastEvidenceAt),
+            fileModifiedAt.addingTimeInterval(-0.01)
+        )
+
+        let current = SessionLifecycleSnapshot(
+            source: .codex,
+            phase: .processing,
+            lastActivity: persistedStartedAt,
+            createdAt: persistedStartedAt,
+            turnStartedAt: persistedStartedAt
+        )
+        let receivedAt = fileModifiedAt.addingTimeInterval(30)
+        let transition = LifecycleReducer.reduce(
+            current: current,
+            observation: SessionLifecycleObservation(
+                sessionId: sessionId,
+                cwd: "/tmp/active-rollout",
+                source: .codex,
+                origin: .codexPolling,
+                evidence: .active(
+                    turnStartedAt: turnStartedAt,
+                    lastEvidenceAt: lastEvidenceAt
+                ),
+                observedAt: fileModifiedAt,
+                receivedAt: receivedAt
+            ),
+            allowCreation: false,
+            activeStaleInterval: 600,
+            missingGracePeriod: 30
+        )
+
+        XCTAssertNotEqual(transition.reason, .staleActiveTimedOut)
+        guard case .update(let updated) = transition.mutation else {
+            return XCTFail("Expected recent rollout activity to refresh the session")
+        }
+        XCTAssertEqual(updated.phase, .processing)
+        XCTAssertNil(updated.completedAt)
+        XCTAssertEqual(updated.turnStartedAt, persistedStartedAt)
+        XCTAssertEqual(updated.lastActivity, fileModifiedAt)
+    }
+
+    func testUnrelatedRolloutWriteDoesNotRefreshActiveEvidence() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessionId = "active-rollout-unrelated-write"
+        let url = try rolloutURL(root: root, sessionId: sessionId)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let oldStartedAt = Date().addingTimeInterval(-20 * 60)
+        let startedAtString = formatter.string(from: oldStartedAt)
+        let persistedStartedAt = try XCTUnwrap(
+            formatter.date(from: startedAtString)
+        )
+        let taskStarted: [String: Any] = [
+            "timestamp": startedAtString,
+            "type": "event_msg",
+            "payload": ["type": "task_started"]
+        ]
+        try writeLines([
+            try encoded(metadata(sessionId: sessionId, cwd: "/tmp/quiet-rollout")),
+            try encoded(taskStarted)
+        ], to: url)
+        try FileManager.default.setAttributes(
+            [.modificationDate: persistedStartedAt],
+            ofItemAtPath: url.path
+        )
+
+        let parser = ConversationParser(codexSessionsRoot: root)
+        let initialLifecycle = await parser.codexTaskLifecycle(sessionId: sessionId)
+        guard case .active(_, let initialEvidenceAt) = initialLifecycle else {
+            return XCTFail("Expected an active rollout")
+        }
+        XCTAssertLessThan(
+            abs(try XCTUnwrap(initialEvidenceAt).timeIntervalSince(persistedStartedAt)),
+            0.01
+        )
+
+        var unrelatedRow = try encoded([
+            "timestamp": startedAtString,
+            "type": "session_meta",
+            "payload": ["id": sessionId, "cwd": "/tmp/quiet-rollout"]
+        ])
+        unrelatedRow.append(0x0A)
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: unrelatedRow)
+        try handle.close()
+
+        let lifecycleAfterUnrelatedWrite = await parser.codexTaskLifecycle(
+            sessionId: sessionId
+        )
+        guard case .active(_, let evidenceAtAfterWrite) = lifecycleAfterUnrelatedWrite else {
+            return XCTFail("The unrelated row should not close the active rollout")
+        }
+        XCTAssertLessThan(
+            abs(try XCTUnwrap(evidenceAtAfterWrite).timeIntervalSince(persistedStartedAt)),
+            0.01
+        )
     }
 }

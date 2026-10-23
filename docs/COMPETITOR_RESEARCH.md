@@ -82,6 +82,14 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 
 本轮继续审计提醒重叠时发现，队友完成代次原先会先记入“已处理”，随后才检查审批优先级；如果审批正打开面板，队友完成不抢占面板，但也不会在审批解决后再提示。现在策略明确区分“呈现 / 暂缓 / 丢弃”：仍在原完成停留时间内且被自动展开交互或短暂 `.popping` 阻挡的代次保持未消费，在 pending 状态变化或 pop 转场结束后重试；已过期、静音、设置关闭或面板已由用户接管的事件按原策略丢弃。该改动参考 Boring Notch [`v2.8-rc.1` 源码](https://github.com/TheBoredTeam/boring.notch/blob/v2.8-rc.1/boringNotch/ContentView.swift)的有序短暂活动思路，但不是把其音乐/通知活动栈直接移植到 Agent Notch。新增测试覆盖审批阻塞后恢复、pop 转场、用户接管、静音、关闭设置与超时边界；仍属于策略/本地状态逻辑测试，不是实际 UI 或真实 Hook 回合验收。
 
+## Codex rollout 活动新鲜度
+
+[Vibe Island 官方更新记录](https://vibeisland.app/changelog/)在 `1.0.54` 条目中声称修复了 Claude/Codex 长任务因 transcript 时间戳陈旧而过早变为 Ready 的问题。它是厂商发布说明，不是我们对竞品运行时行为的独立复现；本轮遵守“仅静态分析”，没有启动 Vibe Island 或 Boring Notch。
+
+对照 Agent Notch 源码和回归用例，发现 Codex rollout 即使刚写入有效的活动事件，解析器仍只把 JSONL 事件时间交给生命周期裁决；时间戳过旧时，活跃会话会被 stale timeout 提前收尾。现在解析器只在本轮确实消费到活动生命周期记录时，才用该文件快照的真实修改时间刷新 `lastEvidenceAt`；无关 JSONL 写入和每秒轮询不会续命。任务开始时间与工具调用开始时间仍由事件时间决定，避免把旧回合伪装成新回合。Reducer 对仍运行的工具使用“工具开始时间与最新活动证据中的较新者”作为有界超时基准：没有新证据仍会在原有 60 分钟上限后结束，有新证据则不会仅因工具启动很早而误判空闲。
+
+新增用例覆盖陈旧事件时间配合新文件写入、无关行不得刷新活动，以及长时间工具调用遇到较新证据时保持 processing；Codex 原生解析和生命周期裁决两个测试套件共 `43 passed / 0 failed`，随后完整 macOS XCTest 共 `390 passed / 0 failed / 0 skipped`。这是本地 XCTest 证据，不等于 Codex GUI、真实长任务或桌面刘海状态切换验收。
+
 ## 对用户提供的旧风险审查的当前核验
 
 截至本记录基线，旧审查中若干 P0/P1 判断已不再符合源码：

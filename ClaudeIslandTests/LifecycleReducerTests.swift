@@ -150,6 +150,39 @@ final class LifecycleReducerTests: XCTestCase {
         XCTAssertNil(timedOut.nextSnapshot?.codexToolExecutionStartedAt)
     }
 
+    func testRecentEvidenceRefreshesLongRunningCodexToolTimeout() throws {
+        let now = Date(timeIntervalSince1970: 40_000)
+        let toolStartedAt = now.addingTimeInterval(-70 * 60)
+        let turnStartedAt = toolStartedAt.addingTimeInterval(-30)
+        let lastEvidenceAt = now.addingTimeInterval(-5 * 60)
+        let current = snapshot(
+            lastActivity: toolStartedAt,
+            turnStartedAt: turnStartedAt,
+            codexToolExecutionStartedAt: toolStartedAt
+        )
+
+        let transition = reduce(
+            current: current,
+            observation: observation(
+                .activeTool(
+                    turnStartedAt: turnStartedAt,
+                    lastEvidenceAt: lastEvidenceAt,
+                    toolStartedAt: toolStartedAt
+                ),
+                observedAt: lastEvidenceAt,
+                receivedAt: now
+            )
+        )
+
+        XCTAssertEqual(transition.reason, .activeTurnAdvanced)
+        guard case .update(let next) = transition.mutation else {
+            return XCTFail("Recent rollout evidence should refresh the active tool")
+        }
+        XCTAssertEqual(next.phase, .processing)
+        XCTAssertEqual(next.lastActivity, lastEvidenceAt)
+        XCTAssertEqual(next.codexToolExecutionStartedAt, toolStartedAt)
+    }
+
     func testDurableRunningToolReopensSessionPreviouslyTimedOutAsStale() throws {
         let toolStartedAt = Date(timeIntervalSince1970: 30_000)
         let staleCompletionAt = toolStartedAt.addingTimeInterval(10 * 60)

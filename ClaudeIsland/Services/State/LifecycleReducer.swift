@@ -487,7 +487,7 @@ nonisolated enum LifecycleReducer {
                     reason: .creationNotAllowed
                 )
             }
-            let staleBaseline = toolStartedAt ?? evidenceAt
+            let staleBaseline = max(toolStartedAt ?? .distantPast, evidenceAt)
             guard observation.receivedAt.timeIntervalSince(staleBaseline) <
                     staleInterval else {
                 return LifecycleTransition(
@@ -522,7 +522,10 @@ nonisolated enum LifecycleReducer {
             evidenceAt,
             next.lastHookEventAt ?? .distantPast
         )
-        let staleBaseline = toolStartedAt ?? newestEvidenceAt
+        let staleBaseline = max(
+            toolStartedAt ?? .distantPast,
+            newestEvidenceAt
+        )
         if !interactionHasPriority,
            observation.receivedAt.timeIntervalSince(staleBaseline) >=
             staleInterval {
