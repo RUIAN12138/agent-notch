@@ -30,6 +30,15 @@ Vibe Island 资源 occurrence 的完整逻辑路径为 `VibeIsland.dmg/Vibe Isla
 - 迁移方式：只采纳“延迟任务必须可撤销、触发时再次验证当前状态”的交互原则，不复制其源码或可识别的界面表达。
 - 已落地：Agent Notch 在 `d769929` 为指针转换增加独立代次，覆盖重排、展开、收起、用户接管和审批弹出；旧回调即使在指针回到相同状态后执行也会失效。本轮进一步将默认悬停进入延迟设为 0.3 秒、离开收起延迟设为 0.2 秒，并把收起延迟下限开放到 0.1 秒；单独保存的用户值保持不变。相关代码与回归测试位于 `ClaudeIsland/Core/NotchViewModel.swift`、`ClaudeIsland/Core/Settings.swift`、`ClaudeIsland/UI/Views/NotchStudioSettingsView.swift` 和 `ClaudeIslandTests/NotchPointerInteractionTests.swift`。
 
+## 当前版本包与启动边界（2026-10-23）
+
+本轮再次校验两份 DMG 的 SHA-256 与上表一致，并只读挂载检查应用包；完成后已卸载。由于用户要求不触发更新/下载、不绕过系统安全设置，本轮没有启动任何竞品，因此以下是包内字符串、配置和源码的静态观察，不是实际 UI 或运行行为。
+
+- Vibe Island 包内信息为 `1.0.54` / `app.vibeisland.macos`。`Info.plist` 声明 `SUAutomaticallyUpdate = true` 并配置 Sparkle feed；启动可能发起更新检查或下载，因此未启动。
+- Boring Notch 的 `spctl --assess --type execute` 返回 `rejected`。其上游 README 说明首次运行需在“系统设置 → 隐私与安全性”手动“仍要打开”；本轮没有移除隔离标记、修改 Gatekeeper 或绕过该提示，未启动该应用。
+- Vibe Island 简体中文资源静态列出了悬停展开、鼠标离开收起、全屏隐藏、悬停延迟、问题到达时展开、任务完成时展开和空闲隐藏等独立设置。Agent Notch 已具备悬停展开/收起、单独延迟、全屏显示开关和问题自动展开；任务完成则采用紧凑提示、停留时长与轻微动画，不默认抢占用户当前窗口。这是不同的注意力策略，不应在没有偏好确认和真实验收前直接改成自动展开。
+- 因此，本轮只确认了 Vibe Island 的设置文案/包配置和 Boring Notch 的 Gatekeeper 状态；没有截图、无障碍树、实际悬停轨迹或真实状态切换证据。若后续需要运行时比较，需在不启用自动更新的安全启动方式明确后再继续；Boring Notch 还需由用户决定是否手动处理 macOS 的首次打开提示。
+
 ## 对用户提供的旧风险审查的当前核验
 
 截至本记录基线，旧审查中若干 P0/P1 判断已不再符合源码：
