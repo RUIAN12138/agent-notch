@@ -173,6 +173,14 @@ Vibe Island 官方 `1.0.54` 更新记录声称，Claude 活动会话卡片现在
 
 **版本记录纠偏：**较早条目提到官方 Releases 页面还列有 `v2.8-rc.2`，与本轮读取到的页面列表不一致。当前不再把 `rc.2` 标为已核验的当前发布；如需追溯它，应另行核实对应 tag、源码和日期，不能据旧记录推断发行状态。
 
+### Codex 原生问题的协议边界核验
+
+Vibe Island `1.0.55` 的官方更新说明声称可以在刘海中回答 Codex 问题；这仍只是厂商功能说明，不证明其内部接入方式或本机运行行为。进一步核对 [OpenAI Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs) 后，`item/tool/requestUserInput` 是由服务端发起、标记为 experimental 的请求；它通过配对响应完成当前请求，而不是往会话里发送一条普通文本。对应的 [响应 JSON schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/ToolRequestUserInputResponse.json) 按问题 ID 返回答案数组。
+
+当前 Agent Notch 读取 Codex rollout/session 文件；回复路径则调用独立的 `codex exec resume --all --skip-git-repo-check` 进程。它没有持有发出该实验性 server request 的 app-server 连接，因此不能用“读取到问题后另开 CLI 发送文本”冒充同一请求的应答。当前先不实现伪应答，也不引入未审查的代理/接管通道；待上游协议稳定性、请求 ID 与并行问题、取消/超时，以及 Desktop/CLI 覆盖面得到验证后再评估集成。后台命令与端口操作也继续暂缓，因其权限面和验收成本更大。
+
+本轮同时新增 `SessionStoreLifecycleTests.testSuspendedHistorySnapshotCannotOverrideNewerStopHook`，用注入的历史快照和可控异步闸门验证：旧用户消息快照在解析挂起期间遇到较新的 Stop Hook，之后恢复也不得把已完成会话重新判为 processing；XCTest 观察到 `.activeOlderThanHook`，完成时间保持 Hook 边界。本机生命周期套件及完整 macOS XCTest 均通过。此项是 Agent Notch 自身的状态时序回归测试，不是竞品运行观察或真实桌面验收。
+
 ### 本轮结论与下一候选
 
-静态对照的下一候选不是再加一套通知优先级，而是评估“Codex 原生提问在刘海中回答”的官方接入路径。需要先完成协议与安全边界审查，尤其是请求身份、并行问题、取消/超时、桌面与 CLI 覆盖范围；仅发现本地化文案或更新说明不足以实现或宣称支持。后台命令/端口控制范围更大，优先级低于完成 Codex 提问协议评估。
+Codex 原生提问已完成协议边界审查，但因为协议仍标记为 experimental 且当前 app-server 控制通道缺失，暂不实现。后续候选优先聚焦 Agent Notch 已有会话/审批状态的真实端到端验收与可靠性缺口；所有基于 Vibe Island、Boring Notch 的判断继续限于已留存的静态包证据、公开更新记录和 Boring Notch 源码，不能外推为运行时结论。

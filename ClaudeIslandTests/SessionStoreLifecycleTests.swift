@@ -1,6 +1,24 @@
 import XCTest
 @testable import Agent_Notch
 
+private actor LifecycleHistoryReadGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var opened = false
+    private(set) var started = false
+
+    func pause() async {
+        started = true
+        if opened { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func open() {
+        opened = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 final class SessionStoreLifecycleTests: XCTestCase {
     func testHookTraceRetainsConcreteProtocolEventNames() async {
         let store = SessionStore(persistenceEnabled: false, fileSyncEnabled: false,
@@ -859,6 +877,82 @@ final class SessionStoreLifecycleTests: XCTestCase {
         let trace = await store.lifecycleTrace(for: sessionId)
         XCTAssertEqual(trace.last?.origin, .transcript)
         XCTAssertEqual(trace.last?.reason, .completionOlderThanHook)
+    }
+
+    func testSuspendedHistorySnapshotCannotOverrideNewerStopHook() async throws {
+        let gate = LifecycleHistoryReadGate()
+        let sessionId = "suspended-history-stop-\(UUID().uuidString)"
+        let cwd = "/tmp/agent-notch-state-tests"
+        let now = Date()
+        let promptAt = now.addingTimeInterval(-3)
+        let staleUserAt = now.addingTimeInterval(-2)
+        let stopAt = now.addingTimeInterval(-1)
+        let staleSnapshot = ConversationParser.HistoryParseResult(
+            messages: [message(
+                id: "stale-history-user",
+                role: .user,
+                timestamp: staleUserAt,
+                text: "old prompt"
+            )],
+            completedTools: [],
+            toolResults: [:],
+            structuredResults: [:],
+            conversationInfo: ConversationInfo(
+                summary: nil,
+                lastMessage: nil,
+                lastMessageRole: nil,
+                lastToolName: nil,
+                firstUserMessage: nil,
+                lastUserMessageDate: nil
+            ),
+            clearDetected: false
+        )
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            historySnapshotProvider: { _, _ in
+                await gate.pause()
+                return staleSnapshot
+            }
+        )
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: promptAt,
+            source: "claude"
+        )))
+
+        let load = Task {
+            await store.loadHistoryResult(sessionId: sessionId, cwd: cwd)
+        }
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline {
+            if await gate.started { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let didSuspend = await gate.started
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "Stop",
+            status: "waiting_for_input",
+            observedAt: stopAt,
+            source: "claude"
+        )))
+        await gate.open()
+        _ = await load.value
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertTrue(didSuspend, "The history read must overlap the newer Stop hook")
+        XCTAssertEqual(session.phase, .waitingForInput)
+        XCTAssertEqual(try XCTUnwrap(session.completedAt).timeIntervalSince1970,
+                       stopAt.timeIntervalSince1970, accuracy: 0.001)
+        let trace = await store.lifecycleTrace(for: sessionId)
+        XCTAssertEqual(trace.last?.origin, .transcript)
+        XCTAssertEqual(trace.last?.reason, .activeOlderThanHook)
     }
 
     func testStaleTranscriptCannotCrossNewerSocketFailureBoundary() async throws {
