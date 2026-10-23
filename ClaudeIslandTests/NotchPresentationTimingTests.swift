@@ -53,6 +53,21 @@ final class NotchPresentationTimingTests: XCTestCase {
         )
     }
 
+    func testSupersededPointerTransitionCannotRunAfterPointerReturns() async {
+        XCTAssertTrue(
+            NotchViewModel.isCurrentPointerTransition(
+                scheduledGeneration: 4,
+                currentGeneration: 4
+            )
+        )
+        XCTAssertFalse(
+            NotchViewModel.isCurrentPointerTransition(
+                scheduledGeneration: 4,
+                currentGeneration: 6
+            )
+        )
+    }
+
     func testMouseLeaveOnlyCollapsesHoverOwnedPresentation() async {
         XCTAssertTrue(
             NotchViewModel.shouldAutoCollapseOnPointerExit(

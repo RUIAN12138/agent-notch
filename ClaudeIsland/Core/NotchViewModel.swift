@@ -122,6 +122,9 @@ class NotchViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private let events: EventMonitors
     private var hoverTimer: DispatchWorkItem?
+    /// Invalidates a delayed pointer callback even if cancellation races with
+    /// dispatch and the pointer has since returned to the same visible state.
+    private var pointerTransitionGeneration: UInt64 = 0
     /// Read the monitor's latest UI snapshot at key-up, not a duplicated cache
     /// of sessions captured when a shortcut or window was first registered.
     var navigationSessions: @MainActor () -> [SessionState] = { [] }
@@ -246,8 +249,8 @@ class NotchViewModel: ObservableObject {
     /// Both mouse movement and a live Settings change call this so Studio's
     /// sliders are genuinely live controls rather than persisted-only values.
     private func schedulePointerTransition() {
-        hoverTimer?.cancel()
-        hoverTimer = nil
+        invalidatePointerTransition()
+        let transitionGeneration = pointerTransitionGeneration
 
         if Self.shouldPerformDeferredHoverOpen(
             isHovering: isHovering,
@@ -256,6 +259,10 @@ class NotchViewModel: ObservableObject {
         ) {
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self,
+                      Self.isCurrentPointerTransition(
+                        scheduledGeneration: transitionGeneration,
+                        currentGeneration: self.pointerTransitionGeneration
+                      ),
                       Self.shouldPerformDeferredHoverOpen(
                         isHovering: self.isHovering,
                         status: self.status,
@@ -281,6 +288,10 @@ class NotchViewModel: ObservableObject {
             // or moving toward nearby menu-bar controls.
             let workItem = DispatchWorkItem { [weak self] in
                 guard let self,
+                      Self.isCurrentPointerTransition(
+                        scheduledGeneration: transitionGeneration,
+                        currentGeneration: self.pointerTransitionGeneration
+                      ),
                       Self.shouldAutoCollapseOnPointerExit(
                         isHovering: self.isHovering,
                         status: self.status,
@@ -300,6 +311,12 @@ class NotchViewModel: ObservableObject {
         }
     }
 
+    private func invalidatePointerTransition() {
+        pointerTransitionGeneration &+= 1
+        hoverTimer?.cancel()
+        hoverTimer = nil
+    }
+
     private func reschedulePointerTransition() {
         schedulePointerTransition()
     }
@@ -316,6 +333,13 @@ class NotchViewModel: ObservableObject {
         isHovering &&
             expandOnHover &&
             (status == .closed || status == .popping)
+    }
+
+    static func isCurrentPointerTransition(
+        scheduledGeneration: UInt64,
+        currentGeneration: UInt64
+    ) -> Bool {
+        scheduledGeneration == currentGeneration
     }
 
     /// Mouse-leave is ownership-aware. Only a lightweight hover preview is
@@ -373,8 +397,7 @@ class NotchViewModel: ObservableObject {
 
     func notchOpen(reason: NotchOpenReason = .unknown) {
         guard canPresentOnCurrentSpace() else { return }
-        hoverTimer?.cancel()
-        hoverTimer = nil
+        invalidatePointerTransition()
         presentationGeneration += 1
         openReason = reason
         status = .opened
@@ -396,8 +419,7 @@ class NotchViewModel: ObservableObject {
     }
 
     func notchClose() {
-        hoverTimer?.cancel()
-        hoverTimer = nil
+        invalidatePointerTransition()
         presentationGeneration += 1
         // Save chat session before closing if in chat mode
         if case .chat(let session) = contentType {
@@ -457,8 +479,7 @@ class NotchViewModel: ObservableObject {
     /// first mouse-down protects every current and future control uniformly.
     func claimOpenedPanelInteraction() {
         guard status == .opened else { return }
-        hoverTimer?.cancel()
-        hoverTimer = nil
+        invalidatePointerTransition()
         openReason = .click
     }
 
@@ -498,8 +519,7 @@ class NotchViewModel: ObservableObject {
         // Validate before replacing the saved conversation or presentation
         // generation. Window-level rejection happens too late to preserve them.
         guard canPresentOnCurrentSpace() else { return }
-        hoverTimer?.cancel()
-        hoverTimer = nil
+        invalidatePointerTransition()
         presentationGeneration += 1
         // Do not downgrade a panel already owned by direct user interaction.
         // The actionable conversation may change, but its close policy should
