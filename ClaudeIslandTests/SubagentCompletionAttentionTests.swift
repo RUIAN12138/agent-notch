@@ -110,6 +110,80 @@ final class SubagentCompletionAttentionTests: XCTestCase {
         )
     }
 
+    func testDeferredTeamCompletionDoesNotReplayIntoANewerRootTurn() throws {
+        let trackingStartedAt = Date(timeIntervalSince1970: 99)
+        let oldCompletionAt = Date(timeIntervalSince1970: 101)
+        let newTurnStartedAt = Date(timeIntervalSince1970: 102)
+        let now = Date(timeIntervalSince1970: 103)
+        var session = SessionState(
+            sessionId: "deferred-team-completion-new-turn",
+            cwd: "/tmp/deferred-team-completion-new-turn",
+            phase: .processing
+        )
+        session.subagentHookState.beginRootTurn(
+            at: trackingStartedAt.timeIntervalSince1970
+        )
+        session.recordSubagentCompletion(at: oldCompletionAt)
+        session.recordAllSubagentsFinished(at: oldCompletionAt)
+
+        let oldIndividualToken = try XCTUnwrap(
+            NotchAttentionPolicy.subagentCompletionToken(
+                for: session,
+                timing: .everyCompletion
+            )
+        )
+        let oldAllFinishedToken = try XCTUnwrap(
+            NotchAttentionPolicy.subagentCompletionToken(
+                for: session,
+                timing: .allAgentsFinished
+            )
+        )
+
+        // A new UserPromptSubmit is the current-turn boundary. The earlier
+        // completion may have been deferred by an unrelated approval, but it
+        // must not be replayed after that approval resolves in this new turn.
+        session.subagentHookState.beginRootTurn(
+            at: newTurnStartedAt.timeIntervalSince1970
+        )
+
+        func disposition(
+            _ token: NotchSubagentCompletionToken
+        ) -> NotchSubagentCompletionDisposition {
+            NotchAttentionPolicy.subagentCompletionDisposition(
+                token,
+                for: session,
+                presentationStartedAt: trackingStartedAt,
+                duration: 8,
+                now: now,
+                isSilenced: false,
+                expandOnAgentTeamCompletion: true,
+                status: .closed,
+                openReason: .unknown,
+                hasPendingAutoExpandedInteraction: false
+            )
+        }
+
+        XCTAssertEqual(disposition(oldIndividualToken), .discard)
+        XCTAssertEqual(disposition(oldAllFinishedToken), .discard)
+
+        session.recordSubagentCompletion(at: now)
+        session.recordAllSubagentsFinished(at: now)
+        let currentIndividualToken = try XCTUnwrap(
+            NotchAttentionPolicy.subagentCompletionToken(
+                for: session,
+                timing: .everyCompletion
+            )
+        )
+        let currentAllFinishedToken = try XCTUnwrap(
+            NotchAttentionPolicy.subagentCompletionToken(
+                for: session,
+                timing: .allAgentsFinished
+            )
+        )
+        XCTAssertEqual(disposition(currentIndividualToken), .present)
+        XCTAssertEqual(disposition(currentAllFinishedToken), .present)
+    }
+
     func testSubagentCompletionTokenUsesHookBoundaryAndExpiresOnDwell() throws {
         let completedAt = Date(timeIntervalSince1970: 100)
         var session = SessionState(

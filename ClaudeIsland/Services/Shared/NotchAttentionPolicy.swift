@@ -296,9 +296,16 @@ enum NotchAttentionPolicy {
         let isAfterRootCompletion = session.completedAt.map {
             token.completedAt > $0
         } ?? true
+        // Completion generations survive new prompts. A deferred event from
+        // an older turn must not become fresh again when a blocker resolves.
+        let isInsideCurrentRootTurn =
+            session.subagentHookState.rootTurnStartedAt.map {
+                token.completedAt.timeIntervalSince1970 >= $0
+            } ?? true
         guard (isRootResponse
                 ? session.completedAt == token.completedAt
                 : isAfterRootCompletion),
+              isInsideCurrentRootTurn,
               shouldPresent(
                 token,
                 presentationStartedAt: presentationStartedAt,
