@@ -30,6 +30,30 @@ final class NotchPointerInteractionTests: XCTestCase {
         try await Task.sleep(nanoseconds: 100_000_000)
     }
 
+    func testHoverTimingDefaultsBalanceIntentionalOpenAndResponsiveClose() throws {
+        let suite = "NotchPointerInteractionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let preferences = NotchPreferences(defaults: defaults)
+
+        XCTAssertEqual(preferences.hoverDelay, 0.3, accuracy: 0.001)
+        XCTAssertEqual(preferences.collapseDelay, 0.2, accuracy: 0.001)
+    }
+
+    func testExplicitHoverTimingPreferencesArePreserved() throws {
+        let suite = "NotchPointerInteractionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(0.45, forKey: "notchHoverDelay")
+        defaults.set(1.1, forKey: "notchCollapseDelay")
+
+        let preferences = NotchPreferences(defaults: defaults)
+
+        XCTAssertEqual(preferences.hoverDelay, 0.45, accuracy: 0.001)
+        XCTAssertEqual(preferences.collapseDelay, 1.1, accuracy: 0.001)
+    }
+
     func testClickUsesEventPositionAfterPointerMovesAway() async throws {
         let events = EventMonitors(startMonitors: false)
         let model = makeViewModel(events)

@@ -420,10 +420,10 @@ final class NotchPreferences: ObservableObject {
         showInFullScreen =
             defaults.object(forKey: Keys.showInFullScreen) as? Bool ?? true
         expandOnHover = defaults.object(forKey: Keys.expandOnHover) as? Bool ?? true
-        hoverDelay = defaults.object(forKey: Keys.hoverDelay) as? Double ?? 0.15
+        hoverDelay = defaults.object(forKey: Keys.hoverDelay) as? Double ?? 0.3
         collapseOnMouseLeave =
             defaults.object(forKey: Keys.collapseOnMouseLeave) as? Bool ?? true
-        collapseDelay = defaults.object(forKey: Keys.collapseDelay) as? Double ?? 0.85
+        collapseDelay = defaults.object(forKey: Keys.collapseDelay) as? Double ?? 0.2
         expandQuestionsAutomatically =
             defaults.object(forKey: Keys.expandQuestionsAutomatically) as? Bool
             ?? true

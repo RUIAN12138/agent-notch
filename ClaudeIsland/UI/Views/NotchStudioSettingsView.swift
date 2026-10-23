@@ -680,7 +680,7 @@ struct NotchStudioSettingsView: View {
                     sliderRow(
                         title: t("Collapse delay", "收起延迟"),
                         value: $preferences.collapseDelay,
-                        range: 0.2...3,
+                        range: 0.1...3,
                         step: 0.05,
                         valueText: String(format: "%.2fs", preferences.collapseDelay)
                     )
