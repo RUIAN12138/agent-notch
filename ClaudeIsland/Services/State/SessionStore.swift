@@ -843,7 +843,7 @@ actor SessionStore {
                       observation.shouldPresentIndividualCompletion else {
                     return
                 }
-                session.recordSubagentCompletion(at: observedAt)
+                session.recordMatchedSubagentCompletion(at: observedAt)
                 if observation.completedAllActiveAgents {
                     session.recordAllSubagentsFinished(at: observedAt)
                 }

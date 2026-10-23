@@ -170,14 +170,24 @@ struct SessionState: Equatable, Identifiable, Sendable {
         }
     }
 
-    /// Record only a strictly newer Hook boundary. This also makes a retried
-    /// SubagentStop with the same source timestamp idempotent.
+    /// Identity-less Hook payloads have no agent key to deduplicate against,
+    /// so retain timestamp idempotence for that compatibility path.
     nonisolated mutating func recordSubagentCompletion(at observedAt: Date) {
         guard observedAt > (lastSubagentCompletedAt ?? .distantPast) else {
             return
         }
         subagentCompletionGeneration &+= 1
         lastSubagentCompletedAt = observedAt
+    }
+
+    /// Exact agent IDs are deduplicated by `SubagentHookState`; distinct
+    /// agents may legitimately finish at the same source timestamp.
+    nonisolated mutating func recordMatchedSubagentCompletion(at observedAt: Date) {
+        subagentCompletionGeneration &+= 1
+        lastSubagentCompletedAt = max(
+            lastSubagentCompletedAt ?? .distantPast,
+            observedAt
+        )
     }
 
     nonisolated mutating func recordAllSubagentsFinished(at observedAt: Date) {

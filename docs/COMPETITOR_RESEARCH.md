@@ -32,6 +32,12 @@ Vibe Island 资源 occurrence 的完整逻辑路径为 `VibeIsland.dmg/Vibe Isla
 - 迁移方式：只采纳“延迟任务必须可撤销、触发时再次验证当前状态”的交互原则，不复制其源码或可识别的界面表达。
 - 已落地：Agent Notch 在 `d769929` 为指针转换增加独立代次，覆盖重排、展开、收起、用户接管和审批弹出；旧回调即使在指针回到相同状态后执行也会失效。本轮进一步将默认悬停进入延迟设为 0.3 秒、离开收起延迟设为 0.2 秒，并把收起延迟下限开放到 0.1 秒；单独保存的用户值保持不变。相关代码与回归测试位于 `ClaudeIsland/Core/NotchViewModel.swift`、`ClaudeIsland/Core/Settings.swift`、`ClaudeIsland/UI/Views/NotchStudioSettingsView.swift` 和 `ClaudeIslandTests/NotchPointerInteractionTests.swift`。
 
+## Boring Notch 后续预发布源码（仅源码，不等于发行包）
+
+补充静态查看官方 GitHub 上的 `v2.8-rc.1` 预发布源码后，发现 `ContentView.swift` 将当前通知与音乐列为有序 `liveActivities`，由 `activityIndex` 选择前台项；通知优先显示，过期后从活动集合自然消失，底层音乐即可重新出现，无需额外记录“恢复到哪个内容”。其 [`v2.8-rc.1` 发布说明](https://github.com/TheBoredTeam/boring.notch/releases/tag/v2.8-rc.1)另列出高 CPU 占用、通知 UI、镜像尺寸和音频输出悬停方面的修复。这些发布说明是上游自述，并非本地性能测量。
+
+这条证据来自[`v2.8-rc.1` 的 `ContentView.swift`](https://github.com/TheBoredTeam/boring.notch/blob/v2.8-rc.1/boringNotch/ContentView.swift)，不是已检查的 `v2.7.3` DMG 或标签；本轮没有取得、用 REA 检查或运行 `v2.8-rc.1` 二进制。因此它只作为更晚源码的设计参考。可迁移的原则是将短暂提示按优先级建模并让过期项自然退出；Agent Notch 若实现多提示汇聚，审批/提问与用户主动打开的面板仍必须高于完成提示。
+
 ## 当前版本包与启动边界（2026-10-23）
 
 本轮再次校验两份 DMG 的 SHA-256 与上表一致，并只读挂载检查应用包；完成后已卸载。用户本轮选择“仅静态分析”，且要求不触发更新/下载、不绕过系统安全设置，因此没有启动任何竞品；以下均为包内字符串、配置和源码观察，不是实际 UI 或运行行为。
@@ -64,7 +70,9 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 
 设置现提供默认关闭的“关闭 / 每个子 Agent / 全部完成后 / 主 Agent 回复时”。旧版显式开启的布尔偏好迁移为“每个子 Agent”；“主 Agent 回复时”只在本轮已观测到 SubagentStart 后，等根 `Stop` 才生成独立提醒，不会把没有子 Agent 的普通完成误判为队友提醒。根 Agent `Stop` 独立决定会话是否完成。若根 `Stop` 已先到，但本轮某个精确匹配且仍活动的子 Agent 随后完成，按“每个子 Agent / 全部完成后”策略仍可生成队友提醒；这不会重新打开根回合，也不会改变会话完成状态。没有匹配到本轮活动 ID 的迟到/重复事件不生成提醒。提示使用 Hook 源时间戳计算现有停留时间，不播放声音，静音规则、审批/问题优先级、用户拥有的展开面板和全屏准入仍然有效。
 
-已识别的 Hook 版本在 Claude Code `2.0.43+` 注册 `SubagentStart`；版本未知或旧版本不假定“全部完成”可用，而是保持安全降级。Bridge 全套 Python 测试为 91 项通过；Swift 回归覆盖 ID 解码、并行集合归零、重复 Stop、乱序 Start、根回复时机、离线快照恢复和旧设置迁移。托管 XCTest 结果是状态/协议回归证据，不是已安装应用或真实 Hook 回合验收。
+已识别的 Hook 版本在 Claude Code `2.0.43+` 注册 `SubagentStart`；版本未知或旧版本不假定“全部完成”可用，而是保持安全降级。Bridge 全套 Python 测试为 91 项通过；本轮运行相关 6 个 Swift XCTest 套件为 67 passed、0 failed、0 skipped，覆盖 ID 解码、并行集合归零、重复 Stop、乱序 Start、根回复时机、离线快照恢复、旧设置迁移和同时间戳的并行完成。测试记录另有一条 `SessionStoreLifecycleTests` QoS 优先级反转运行时警告；托管 XCTest 结果是状态/协议回归证据，不是已安装应用或真实 Hook 回合验收。
+
+进一步验证发现，不同 `agent_id` 的合法 `SubagentStop` 可以具有相同源时间戳；此前在 `SessionState` 仅按时间去重会漏计其中一个。现在精确 ID 的重复抑制由 `SubagentHookState` 负责，已匹配的不同 Agent 即使时间相同也分别增加完成代次；无 ID 的旧协议仍保留时间戳幂等保护。新增 XCTest 覆盖同时间戳并行完成。该修复不宣称已经验证真实 Claude Hook 并发流量。
 
 ## 对用户提供的旧风险审查的当前核验
 

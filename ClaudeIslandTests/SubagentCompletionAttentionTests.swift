@@ -254,6 +254,48 @@ final class SubagentCompletionAttentionTests: XCTestCase {
         XCTAssertTrue(session.subagentHookState.activeAgentIDs.isEmpty)
     }
 
+    func testDistinctSubagentsCanCompleteAtTheSameSourceTimestamp() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "subagent-same-timestamp-\(UUID().uuidString)"
+        let start = Date().addingTimeInterval(-10)
+        let completionAt = start.addingTimeInterval(2)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: start
+        )))
+        for agentId in ["agent-a", "agent-b"] {
+            await store.process(.hookReceived(hook(
+                sessionId: sessionId,
+                event: "SubagentStart",
+                status: "processing",
+                observedAt: start.addingTimeInterval(1),
+                agentId: agentId
+            )))
+        }
+        for agentId in ["agent-a", "agent-b"] {
+            await store.process(.hookReceived(hook(
+                sessionId: sessionId,
+                event: "SubagentStop",
+                status: "processing",
+                observedAt: completionAt,
+                agentId: agentId
+            )))
+        }
+
+        let snapshot = await store.session(for: sessionId)
+        let session = try XCTUnwrap(snapshot)
+        XCTAssertEqual(session.subagentCompletionGeneration, 2)
+        XCTAssertEqual(session.allSubagentsFinishedGeneration, 1)
+        XCTAssertEqual(session.lastSubagentCompletedAt, completionAt)
+    }
+
     func testRootResponseTimingOnlyCreatesTeamAttentionAfterSubagentActivity() async throws {
         let store = SessionStore(
             persistenceEnabled: false,
