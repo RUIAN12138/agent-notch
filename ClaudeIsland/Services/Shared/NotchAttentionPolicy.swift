@@ -58,6 +58,12 @@ struct NotchFollowUpCandidate: Equatable, Sendable {
     let occurredAt: Date
 }
 
+enum NotchCompletionPanelCollapseDecision: Equatable {
+    case collapse
+    case deferUntilInteractionResolves
+    case discard
+}
+
 enum NotchAttentionPolicy {
     static func completionDwellRemaining(
         startedAt: Date,
@@ -109,6 +115,27 @@ enum NotchAttentionPolicy {
         status == .opened &&
             openReason == .notification &&
             !hasPendingAutoExpandedInteraction
+    }
+
+    static func completionPanelCollapseDecision(
+        status: NotchStatus,
+        openReason: NotchOpenReason,
+        hasPendingAutoExpandedInteraction: Bool
+    ) -> NotchCompletionPanelCollapseDecision {
+        if shouldCollapseNotificationPanelAfterCompletion(
+            status: status,
+            openReason: openReason,
+            hasPendingAutoExpandedInteraction:
+                hasPendingAutoExpandedInteraction
+        ) {
+            return .collapse
+        }
+        if status == .opened,
+           openReason == .notification,
+           hasPendingAutoExpandedInteraction {
+            return .deferUntilInteractionResolves
+        }
+        return .discard
     }
 
     static func interactionToken(

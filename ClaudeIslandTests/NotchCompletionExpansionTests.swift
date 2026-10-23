@@ -63,6 +63,29 @@ final class NotchCompletionExpansionTests: XCTestCase {
         ))
     }
 
+    func testExpiredCompletionCollapseDefersForInteractionThenResumes() {
+        let blocked = NotchAttentionPolicy.completionPanelCollapseDecision(
+            status: .opened,
+            openReason: .notification,
+            hasPendingAutoExpandedInteraction: true
+        )
+        XCTAssertEqual(blocked, .deferUntilInteractionResolves)
+
+        let resumed = NotchAttentionPolicy.completionPanelCollapseDecision(
+            status: .opened,
+            openReason: .notification,
+            hasPendingAutoExpandedInteraction: false
+        )
+        XCTAssertEqual(resumed, .collapse)
+
+        let userOwned = NotchAttentionPolicy.completionPanelCollapseDecision(
+            status: .opened,
+            openReason: .click,
+            hasPendingAutoExpandedInteraction: false
+        )
+        XCTAssertEqual(userOwned, .discard)
+    }
+
     func testCompletionDwellUsesTheEventTimestampRatherThanDeliveryTime() {
         let completedAt = Date(timeIntervalSince1970: 100)
 
