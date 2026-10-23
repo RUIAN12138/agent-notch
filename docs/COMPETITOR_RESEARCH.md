@@ -1,7 +1,7 @@
 # 竞品逆向证据与 Agent Notch 决策记录
 
 审查日期：2026-10-23
-Agent Notch 基线：`main` / `dd0a291`
+Agent Notch 基线：`main` / `5154504`
 范围：Vibe Island 1.0.54 官方 DMG、Boring Notch 2.7.3 官方 DMG，以及 Boring Notch `v2.7.3` 源码标签。
 
 ## 证据边界
@@ -16,7 +16,7 @@ Agent Notch 基线：`main` / `dd0a291`
 | Vibe Island 主程序 | `vibe-island`，arm64 Mach-O；二进制 SHA-256 `3023bc09dff55329a19fdb09d6a3c76227159a0dcaa8f656ca04f4ae941bd2f4`。REA 报告 73 个 load commands、54 个依赖、3,519 个已返回 imports；imports 不完整，不能据此证明缺少其他符号。 | Mach-O: `ev_4c8cdef3f048a544d8a785375d9e252125d6b654b50d345c52782124d559a3c1`；summary view: `ev_284f40ac10de2f9565274cd96bf3167d9b7933b686db17e4cd5e885e7d1de786` |
 | Vibe Island 原生派发元数据 | 对 arm64 主程序尝试 REA `inspect_native_dispatch_metadata`；读取器因 `objc_ivars` 第 46、48 项名称为空而失败，未产生可保留的 Evidence。该失败只说明当前读取器无法继续，不证明应用自身有缺陷；本机没有可用 Hopper/Ghidra 反编译提供器。 | REA 6.5.0 的执行错误诊断；无 Evidence ID |
 | Vibe Island `Info.plist` | 版本 `1.0.54`，Bundle ID `app.vibeisland.macos`，构建提交字段 `c239e829231c`；声明启用用量功能、Apple Events 用途及 Sparkle 自动更新。均为包内声明，不是运行行为证明。 | `ev_c26a3fc6c573ef66fea89099cce06bd0fb736c9c57e19728f903e2a3ef196a26`、`ev_bc51bacf08ededa66dda128370432483f9746d50ed3573cace4dba2604e79e47` |
-| Vibe Island 简体中文设置资源 | `zh-Hans.lproj/Localizable.strings` 中含有完成通知自动展开、问题到达时展开、Team 队友完成时展开、悬停延迟、全屏隐藏、空闲自动隐藏及完成停留时长等文案。关闭完成自动展开时的帮助文案描述为仅在刘海保留轻提示；Team 完成设置帮助文案明确写着默认关闭。资源文案不能单独证明设置实际接入了状态机或其运行效果。 | `inspect_plist`: `ev_28b3fbaad320405079e7b244b28417a3c315ebb5ac80873a3e72c30c840c10ea` |
+| Vibe Island 简体中文设置资源 | `zh-Hans.lproj/Localizable.strings` 中含有完成通知自动展开、问题到达时展开、Team 队友完成时展开、悬停延迟、全屏隐藏、空闲自动隐藏及完成停留时长等文案。另有子 Agent 提醒时机选项：每个完成、全部完成、主 Agent 回复。Team 完成设置帮助文案明确写着默认关闭、且不展开主面板/不播放完成音。资源文案不能单独证明设置实际接入了状态机或其运行效果。 | `inspect_plist`: `ev_28b3fbaad320405079e7b244b28417a3c315ebb5ac80873a3e72c30c840c10ea` |
 | Vibe Island RemoteAgent manifest | 包内存在 schema v2 清单：远程 Agent 协议 `1.12.0`，覆盖 darwin/linux/freebsd 的 amd64/arm64，并列出每个资产的 SHA-256。REA 将文件识别为已验证的 2,261-byte 资源；清单本身是否有独立签名、应用如何验证和执行它，仍未知。 | inventory occurrence `art_de34ec5479366b67bdaea3124dcbc6cf188700ef1b587433e363b9dccfc9c166`；父 inventory `ev_e209a4be37f6f277738b5d7da78f5f22063ac15c32b6a3c2fccf0a025469d282` |
 | Vibe Island 用量价格数据 | 包内另有 17,446-byte `usage-pricing.json`，顶层键包括 `models`、`aliases`、`schemaVersion`、`source` 和 `syncedAt`。本轮只确认资源存在及 schema 顶层，未校验单价、更新来源或 UI 使用路径。 | inventory occurrence `art_a953d29db95b76658e25c92eab9e58acf6f39ce099465653db3030d4df706f61`；父 inventory同上 |
 | Boring Notch DMG | SHA-256 `23786382548d33c59b309db558e513a92e3f95b63d611544dcddf5d196e46698`；完整清单 229 nodes / 249 occurrences / 236 edges；0 个完整性矛盾。 | `inspect_artifact` 本轮重查：`ev_c53bd004dbd0660eae2ad30203d9d4213fb1f7f2796494cbcd646b21710eebe0`；inventory: `ev_451f56e7de5b1c371b241af2a5c195898f4be2f3d92a6c56de2aa4a788208033`；当前会话的清单汇总：`ev_f1a611572a604f6b3f88ccef988548996b5b45e1976c2669b3c0084495893bb0` |
@@ -56,6 +56,14 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 
 这项是基于竞品设置文案做出的 Agent Notch 产品决策，不是对 Vibe Island 私有实现的复刻结论。新增测试覆盖默认值与持久化、打开策略/所有权边界、全屏空间拒绝，以及延迟到达时仍从真实 `completedAt` 计算停留时间。
 
+## 子 Agent 完成时序
+
+重新读取已导入的 REA 静态证据（共 26 条记录）后，`ev_28b3fbaad320405079e7b244b28417a3c315ebb5ac80873a3e72c30c840c10ea` 中还观察到 Vibe Island 设置资源提供“每个子 Agent 完成 / 全部完成 / 主 Agent 回复”三种通知时机，且 Team 自动展开默认关闭、无完成提示音。这些是包内资源文字，不证明竞品运行时状态机的具体实现。
+
+Agent Notch 本轮落地其中协议可直接证明的第一段：增加默认关闭的“队友完成时展开”，只在生命周期裁决接受新的 `SubagentStop` 时记录独立事件代次；主 Agent 的 `Stop` 仍然单独决定根会话是否完成。提示使用 Hook 源时间戳计算现有停留时间，不播放声音，静音规则、审批/问题优先级、用户拥有的展开面板和全屏准入仍然有效。生命周期拒绝的迟到 `SubagentStop` 不更新提醒代次；相同时间戳重复事件是幂等的；事件代次保存在内存中，避免重启后重播旧的队友完成提醒。
+
+本轮没有实现“全部完成”或“主 Agent 回复”选项：当前 Hook 传输未提供可可靠配对所有并行队友的 ID/集合，不能据此正确判定最后一个队友。本轮运行 `SubagentCompletionAttentionTests`、`SessionStoreLifecycleTests`、`NotchCompletionExpansionTests`、`NotchPresentationTimingTests` 和 `NotchFullScreenTests`：51 passed、0 failed、0 skipped。它验证状态策略和 Store 事件边界，不是已安装应用/真实 Hook 回合验收。
+
 ## 对用户提供的旧风险审查的当前核验
 
 截至本记录基线，旧审查中若干 P0/P1 判断已不再符合源码：
@@ -78,7 +86,7 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 
 - **已采用**：Boring Notch 的可撤销 hover 时序原则已独立实现；其 0.3 秒进入等待和 100ms 退出复核启发了 Agent Notch 的新默认值（0.3 秒进入、0.2 秒退出），同时保留 Agent Notch 自己的指针代次防竞态与扩大后的几何命中边界。
 - **已修复**：完成事件不再误收起仍有自动展开资格的审批/提问面板；依据是 Agent Notch 源码复现与回归测试，不声称这是 Vibe Island 私有实现的逆向结论。
-- **新增可选策略**：Vibe Island 安装包静态资源展示完成事件自动展开及 dwell 文案；Agent Notch 新增默认关闭的完成时展开设置，并复用既有完成停留时长自动收起，保留审批、用户所有权和全屏策略优先级。
+- **新增可选策略**：Vibe Island 安装包静态资源展示根任务与 Team 队友完成自动展开，以及三种子 Agent 通知时机；Agent Notch 已实现默认关闭的根任务完成和队友完成展开，并复用既有停留时长自动收起，保留审批、用户所有权和全屏策略优先级。全部子 Agent 汇聚及仅根回复时通知暂缓，待 Hook 身份协议能够可靠识别完整并行集合后再设计。
 - **候选但暂缓**：Vibe Island 的平台化 RemoteAgent manifest 与版本/散列清单可作为未来分发设计参考；当前不引入 SSH/远程执行能力，避免在核心状态与审批可靠性尚需真实运行验收时扩张权限面。
 - **暂不采用**：Vibe Island 的价格数据资源；Agent Notch 已有订阅用量与会话 token 数据，但没有经过验证的跨模型成本口径，本轮也不扩展该功能。
 - **未验证**：Vibe Island 的真实展开/收起、Agent 状态与审批交互。REA residual unknown `unk_055a4d687c6b84aff4d6bfdb2cc58b8da51794c7c245ccb8d34ed25647e99186` 要求 controlled replay；后续若要启动竞品 app，须在动作时确认，并避免登录、授权系统控制、触发终端控制或远程资产下载。

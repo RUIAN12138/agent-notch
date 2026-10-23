@@ -84,6 +84,12 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// not considered completed.
     var completedAt: Date?
 
+    /// Latest accepted Claude SubagentStop event. The generation is an
+    /// in-memory event cursor so SwiftUI can observe a Hook transition even
+    /// when several SessionStore publications are coalesced into one frame.
+    var subagentCompletionGeneration: UInt64
+    var lastSubagentCompletedAt: Date?
+
     // MARK: - Identifiable
 
     var id: String { sessionId }
@@ -113,7 +119,9 @@ struct SessionState: Equatable, Identifiable, Sendable {
         lastHookEventAt: Date? = nil,
         lastCodexTurnStartedAt: Date? = nil,
         codexToolExecutionStartedAt: Date? = nil,
-        completedAt: Date? = nil
+        completedAt: Date? = nil,
+        subagentCompletionGeneration: UInt64 = 0,
+        lastSubagentCompletedAt: Date? = nil
     ) {
         self.sessionId = sessionId
         self.cwd = cwd
@@ -135,9 +143,21 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.lastCodexTurnStartedAt = lastCodexTurnStartedAt
         self.codexToolExecutionStartedAt = codexToolExecutionStartedAt
         self.completedAt = completedAt
+        self.subagentCompletionGeneration = subagentCompletionGeneration
+        self.lastSubagentCompletedAt = lastSubagentCompletedAt
         if let completedAt {
             self.toolTracker.recordTerminalBoundary(completedAt)
         }
+    }
+
+    /// Record only a strictly newer Hook boundary. This also makes a retried
+    /// SubagentStop with the same source timestamp idempotent.
+    nonisolated mutating func recordSubagentCompletion(at observedAt: Date) {
+        guard observedAt > (lastSubagentCompletedAt ?? .distantPast) else {
+            return
+        }
+        subagentCompletionGeneration &+= 1
+        lastSubagentCompletedAt = observedAt
     }
 
     // MARK: - Derived Properties

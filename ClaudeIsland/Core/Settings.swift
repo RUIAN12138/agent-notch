@@ -215,6 +215,8 @@ final class NotchPreferences: ObservableObject {
         static let expandQuestionsAutomatically =
             "notchExpandQuestionsAutomatically"
         static let expandOnTaskCompletion = "notchExpandOnTaskCompletion"
+        static let expandOnAgentTeamCompletion =
+            "notchExpandOnAgentTeamCompletion"
         static let completionCompactDuration = "notchCompletionCompactDuration"
         static let followUpRemindersEnabled = "notchFollowUpRemindersEnabled"
         static let followUpReminderDelay = "notchFollowUpReminderDelay"
@@ -281,6 +283,18 @@ final class NotchPreferences: ObservableObject {
             defaults.set(
                 expandOnTaskCompletion,
                 forKey: Keys.expandOnTaskCompletion
+            )
+        }
+    }
+
+    /// A teammate finishing is distinct from the root task finishing. Keep
+    /// this opt-in so internal agent work cannot unexpectedly take over the
+    /// user's current screen.
+    @Published var expandOnAgentTeamCompletion: Bool {
+        didSet {
+            defaults.set(
+                expandOnAgentTeamCompletion,
+                forKey: Keys.expandOnAgentTeamCompletion
             )
         }
     }
@@ -441,6 +455,9 @@ final class NotchPreferences: ObservableObject {
             ?? true
         expandOnTaskCompletion =
             defaults.object(forKey: Keys.expandOnTaskCompletion) as? Bool
+            ?? false
+        expandOnAgentTeamCompletion =
+            defaults.object(forKey: Keys.expandOnAgentTeamCompletion) as? Bool
             ?? false
         completionCompactDuration =
             defaults.object(forKey: Keys.completionCompactDuration) as? Double ?? 8

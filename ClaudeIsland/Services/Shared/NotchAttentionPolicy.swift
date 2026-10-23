@@ -18,6 +18,14 @@ struct NotchCompletionToken: Hashable, Sendable {
     let completedAt: Date
 }
 
+/// A Claude teammate can finish before the root session. Its increasing
+/// generation stays observable when UI snapshots merge several Hook updates.
+struct NotchSubagentCompletionToken: Hashable, Sendable {
+    let sessionId: String
+    let generation: UInt64
+    let completedAt: Date
+}
+
 /// Presentation deduplication uses the same complete identity as permission
 /// routing. Tool-use ids are scoped to a session and cannot safely suppress an
 /// interaction arriving from a different concurrent agent.
@@ -59,6 +67,23 @@ enum NotchAttentionPolicy {
         hasPendingAutoExpandedInteraction: Bool
     ) -> Bool {
         guard expandOnTaskCompletion,
+              !hasPendingAutoExpandedInteraction else {
+            return false
+        }
+
+        if status == .closed {
+            return true
+        }
+        return status == .opened && openReason == .notification
+    }
+
+    static func shouldAutoExpandOnAgentTeamCompletion(
+        expandOnAgentTeamCompletion: Bool,
+        status: NotchStatus,
+        openReason: NotchOpenReason,
+        hasPendingAutoExpandedInteraction: Bool
+    ) -> Bool {
+        guard expandOnAgentTeamCompletion,
               !hasPendingAutoExpandedInteraction else {
             return false
         }
@@ -150,8 +175,34 @@ enum NotchAttentionPolicy {
         )
     }
 
+    static func subagentCompletionToken(
+        for session: SessionState
+    ) -> NotchSubagentCompletionToken? {
+        guard session.subagentCompletionGeneration > 0,
+              let completedAt = session.lastSubagentCompletedAt else {
+            return nil
+        }
+        return NotchSubagentCompletionToken(
+            sessionId: session.sessionId,
+            generation: session.subagentCompletionGeneration,
+            completedAt: completedAt
+        )
+    }
+
     static func shouldPresent(
         _ token: NotchCompletionToken,
+        presentationStartedAt: Date,
+        duration: TimeInterval,
+        now: Date = Date()
+    ) -> Bool {
+        let age = now.timeIntervalSince(token.completedAt)
+        return token.completedAt >= presentationStartedAt &&
+            age >= -5 &&
+            age < duration
+    }
+
+    static func shouldPresent(
+        _ token: NotchSubagentCompletionToken,
         presentationStartedAt: Date,
         duration: TimeInterval,
         now: Date = Date()

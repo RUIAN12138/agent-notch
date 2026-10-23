@@ -46,7 +46,7 @@ private final class NotchDelayedUIWork: ObservableObject {
     var bounceTask: Task<Void, Never>?
     var completionSoundTask: Task<Void, Never>?
     var completionPanelCollapseTask: Task<Void, Never>?
-    var completionPanelCollapseToken: NotchCompletionToken?
+    var completionPanelCollapseStartedAt: Date?
     var completionPanelCollapseGeneration: UInt64 = 0
     var followUpDeliveryTask: Task<Void, Never>?
     var completionVisibilityTasks: [String: Task<Void, Never>] = [:]
@@ -60,7 +60,7 @@ private final class NotchDelayedUIWork: ObservableObject {
         completionSoundTask = nil
         completionPanelCollapseTask?.cancel()
         completionPanelCollapseTask = nil
-        completionPanelCollapseToken = nil
+        completionPanelCollapseStartedAt = nil
         completionPanelCollapseGeneration &+= 1
         followUpDeliveryTask?.cancel()
         followUpDeliveryTask = nil
@@ -83,6 +83,8 @@ struct NotchView: View {
     @State private var previousInteractionTokens:
         Set<NotchInteractionToken> = []
     @State private var previousCompletionTokens: Set<NotchCompletionToken> = []
+    @State private var previousSubagentCompletionTokens:
+        [String: NotchSubagentCompletionToken] = [:]
     @State private var completionVisibilityStartedAt: [String: Date] = [:]
     @State private var attentionTrackingStartedAt = Date()
     @State private var isVisible: Bool = false
@@ -367,6 +369,18 @@ struct NotchView: View {
                 sessionMonitor?.instances ?? []
             }
             quietHoursMonitor.configure(quietHoursSchedule)
+            previousSubagentCompletionTokens = Dictionary(
+                uniqueKeysWithValues: sessionMonitor.instances.compactMap {
+                    session -> (String, NotchSubagentCompletionToken)? in
+                    guard let token =
+                        NotchAttentionPolicy.subagentCompletionToken(
+                            for: session
+                        ) else {
+                        return nil
+                    }
+                    return (session.sessionId, token)
+                }
+            )
             sessionMonitor.startMonitoring()
             viewModel.updateVisibleSessionCount(sessionMonitor.instances.count)
             updateIdleVisibility()
@@ -383,6 +397,7 @@ struct NotchView: View {
             viewModel.updateVisibleSessionCount(instances.count)
             handleProcessingChange()
             handleWaitingForInputChange(instances)
+            handleAgentTeamCompletionChange(instances)
             reconcileFollowUpReminders(instances)
         }
         .onChange(of: preferences.idleBehavior) { _, _ in
@@ -1042,7 +1057,9 @@ struct NotchView: View {
                    let latestCompletion = presentableTokens.max(by: {
                        $0.completedAt < $1.completedAt
                    }) {
-                    scheduleCompletionPanelCollapse(after: latestCompletion)
+                    scheduleCompletionPanelCollapse(
+                        startedAt: latestCompletion.completedAt
+                    )
                 }
             } else if NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
                 status: viewModel.status,
@@ -1099,6 +1116,78 @@ struct NotchView: View {
         previousCompletionTokens = currentTokens
     }
 
+    private func handleAgentTeamCompletionChange(
+        _ instances: [SessionState]
+    ) {
+        let now = Date()
+        var nextTokens = previousSubagentCompletionTokens.filter {
+            now.timeIntervalSince($0.value.completedAt) < 60
+        }
+        var presentableTokens: [NotchSubagentCompletionToken] = []
+
+        for session in instances {
+            guard let token =
+                NotchAttentionPolicy.subagentCompletionToken(for: session)
+            else {
+                continue
+            }
+            let previousGeneration = nextTokens[token.sessionId]?.generation ?? 0
+            guard token.generation > previousGeneration else { continue }
+            nextTokens[token.sessionId] = token
+
+            // If the root has already stopped, its completion event owns the
+            // attention. Do not replay an earlier teammate event afterward.
+            guard session.completedAt == nil,
+                  NotchAttentionPolicy.shouldPresent(
+                    token,
+                    presentationStartedAt: attentionTrackingStartedAt,
+                    duration: preferences.completionCompactDuration,
+                    now: now
+                  ),
+                  !isSessionSilenced(session) else {
+                continue
+            }
+            presentableTokens.append(token)
+        }
+        previousSubagentCompletionTokens = nextTokens
+
+        guard preferences.expandOnAgentTeamCompletion,
+              !presentableTokens.isEmpty else {
+            return
+        }
+
+        let hasPendingAutoExpandedInteraction =
+            NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
+                in: instances,
+                expandQuestionsAutomatically:
+                    preferences.expandQuestionsAutomatically
+            )
+        guard NotchAttentionPolicy.shouldAutoExpandOnAgentTeamCompletion(
+            expandOnAgentTeamCompletion:
+                preferences.expandOnAgentTeamCompletion,
+            status: viewModel.status,
+            openReason: viewModel.openReason,
+            hasPendingAutoExpandedInteraction:
+                hasPendingAutoExpandedInteraction
+        ) else {
+            return
+        }
+
+        viewModel.showCompletionPanel()
+        guard viewModel.status == .opened,
+              viewModel.openReason == .notification,
+              let latestCompletion = presentableTokens.max(by: {
+                  $0.completedAt < $1.completedAt
+              }) else {
+            return
+        }
+        isVisible = true
+        activityCoordinator.hideActivity()
+        scheduleCompletionPanelCollapse(
+            startedAt: latestCompletion.completedAt
+        )
+    }
+
     private func scheduleCompletionVisibilityExpiry(
         sessionId: String,
         displayStartedAt: Date
@@ -1127,15 +1216,13 @@ struct NotchView: View {
         }
     }
 
-    private func scheduleCompletionPanelCollapse(
-        after token: NotchCompletionToken
-    ) {
+    private func scheduleCompletionPanelCollapse(startedAt: Date) {
         delayedUIWork.completionPanelCollapseTask?.cancel()
         delayedUIWork.completionPanelCollapseGeneration &+= 1
         let generation = delayedUIWork.completionPanelCollapseGeneration
-        delayedUIWork.completionPanelCollapseToken = token
+        delayedUIWork.completionPanelCollapseStartedAt = startedAt
         let remaining = NotchAttentionPolicy.completionDwellRemaining(
-            startedAt: token.completedAt,
+            startedAt: startedAt,
             duration: preferences.completionCompactDuration
         )
         delayedUIWork.completionPanelCollapseTask = Task { @MainActor in
@@ -1147,7 +1234,7 @@ struct NotchView: View {
             }
 
             delayedUIWork.completionPanelCollapseTask = nil
-            delayedUIWork.completionPanelCollapseToken = nil
+            delayedUIWork.completionPanelCollapseStartedAt = nil
             let hasPendingAutoExpandedInteraction =
                 NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
                     in: sessionMonitor.instances,
@@ -1166,16 +1253,16 @@ struct NotchView: View {
     }
 
     private func rescheduleCompletionPanelCollapse() {
-        guard let token = delayedUIWork.completionPanelCollapseToken else {
+        guard let startedAt = delayedUIWork.completionPanelCollapseStartedAt else {
             return
         }
-        scheduleCompletionPanelCollapse(after: token)
+        scheduleCompletionPanelCollapse(startedAt: startedAt)
     }
 
     private func cancelCompletionPanelCollapse() {
         delayedUIWork.completionPanelCollapseTask?.cancel()
         delayedUIWork.completionPanelCollapseTask = nil
-        delayedUIWork.completionPanelCollapseToken = nil
+        delayedUIWork.completionPanelCollapseStartedAt = nil
         delayedUIWork.completionPanelCollapseGeneration &+= 1
     }
 

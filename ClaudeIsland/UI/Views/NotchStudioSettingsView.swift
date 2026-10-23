@@ -726,6 +726,19 @@ struct NotchStudioSettingsView: View {
                 )
 
                 Divider()
+                settingToggle(
+                    t("Expand when a teammate finishes", "队友完成时展开"),
+                    detail: t(
+                        "Show a new Claude subagent completion without playing a sound. Approvals and panels you opened stay in control.",
+                        "Claude 子 Agent 完成时显示面板，不播放提示音；待处理审批和你主动打开的面板保持优先。"
+                    ),
+                    isOn: $preferences.expandOnAgentTeamCompletion
+                )
+                .accessibilityIdentifier(
+                    "settings.notifications.expandOnAgentTeamCompletion"
+                )
+
+                Divider()
                 sliderRow(
                     title: t("Completion dwell", "完成后停留"),
                     value: $preferences.completionCompactDuration,

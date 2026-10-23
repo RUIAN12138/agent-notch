@@ -470,7 +470,16 @@ actor SessionStore {
             (event.event != "PreToolUse" && !isExactPendingCompletion)
         if mayStartTrackedWork && didAcceptExactPendingCompletion {
             processToolTracking(event: event, session: &session)
-            processSubagentTracking(event: event, session: &session)
+            // A late SubagentStop may still be accepted for ordinary tool
+            // bookkeeping, but it must not create fresh attention after the
+            // parent turn's terminal boundary was already accepted.
+            if event.event != "SubagentStop" || shouldApplyLifecycle {
+                processSubagentTracking(
+                    event: event,
+                    observedAt: observedAt,
+                    session: &session
+                )
+            }
         }
 
         if shouldApplyLifecycle && isCompletionSignal {
@@ -737,7 +746,11 @@ actor SessionStore {
         }
     }
 
-    private func processSubagentTracking(event: HookEvent, session: inout SessionState) {
+    private func processSubagentTracking(
+        event: HookEvent,
+        observedAt: Date,
+        session: inout SessionState
+    ) {
         switch event.event {
         case "PreToolUse":
             if ToolCallItem.isSubagentContainerName(event.tool), let toolUseId = event.toolUseId {
@@ -792,8 +805,9 @@ actor SessionStore {
             }
 
         case "SubagentStop":
-            // SubagentStop fires when a subagent completes - stop tracking
-            // Subagent tools are populated from agent file in processFileUpdated
+            // This is a teammate completion, not the root task's Stop. Keep
+            // its source timestamp so delayed UI delivery cannot replay it.
+            session.recordSubagentCompletion(at: observedAt)
             Self.logger.debug("SubagentStop received")
 
         default:
