@@ -16,14 +16,20 @@ final class SessionRowPresentationTests: XCTestCase {
     }
 
     private func presentation(
-        phase: SessionPhase = .processing,
+        phase: SessionPhase = .waitingForInput,
         completedAt: Date? = nil,
         message: String? = nil,
         role: String? = nil,
-        tool: String? = nil
+        tool: String? = nil,
+        inProgressTools: [ToolInProgress] = [],
+        terminalBoundaryAt: Date? = nil
     ) -> SessionRowPresentation {
         SessionRowPresentation(session: SessionState(
             sessionId: "row-session", cwd: "/tmp/row-presentation", phase: phase,
+            toolTracker: ToolTracker(
+                inProgress: Dictionary(uniqueKeysWithValues: inProgressTools.map { ($0.id, $0) }),
+                terminalBoundaryAt: terminalBoundaryAt
+            ),
             conversationInfo: ConversationInfo(
                 summary: nil, lastMessage: message, lastMessageRole: role,
                 lastToolName: tool, firstUserMessage: nil, lastUserMessageDate: nil
@@ -91,6 +97,55 @@ final class SessionRowPresentationTests: XCTestCase {
             XCTAssertEqual(presentation(phase: request("AskUserQuestion"), message: "Approved", role: role).status, .question)
             XCTAssertEqual(presentation(phase: request("ExitPlanMode"), message: "Completed", role: role).status, .plan)
         }
+    }
+
+    func testProcessingActivityDoesNotPresentStaleTranscriptAsCurrentStep() async {
+        let row = presentation(phase: .processing, message: "Old command completed", role: "tool", tool: "Bash")
+        XCTAssertEqual(row.activity(language: .english), "Generating response")
+        XCTAssertEqual(row.activity(language: .simplifiedChinese), "正在生成回复")
+    }
+
+    func testProcessingActivityPrefersNewestLiveToolAndNeverShowsItsRawCommand() async {
+        let boundary = Date(timeIntervalSince1970: 100)
+        let tools = [
+            ToolInProgress(id: "old", name: "Read", startTime: boundary.addingTimeInterval(1), phase: .running),
+            ToolInProgress(id: "current", name: "Bash", startTime: boundary.addingTimeInterval(2), phase: .running),
+            ToolInProgress(id: "awaiting", name: "Write", startTime: boundary.addingTimeInterval(3), phase: .pendingApproval),
+        ]
+        let row = presentation(
+            phase: .processing,
+            message: "swift test --private-flag", role: "tool", tool: "Bash",
+            inProgressTools: tools,
+            terminalBoundaryAt: boundary
+        )
+
+        XCTAssertEqual(row.activity(language: .english), "Running Bash")
+        XCTAssertEqual(row.activity(language: .simplifiedChinese), "正在执行：Bash")
+    }
+
+    func testProcessingActivityIgnoresToolsFromBeforeTerminalBoundary() async {
+        let boundary = Date(timeIntervalSince1970: 200)
+        let staleTool = ToolInProgress(
+            id: "stale", name: "Bash", startTime: boundary.addingTimeInterval(-1), phase: .running
+        )
+        let row = presentation(
+            phase: .processing,
+            message: "Old output", role: "tool", tool: "Bash",
+            inProgressTools: [staleTool],
+            terminalBoundaryAt: boundary
+        )
+
+        XCTAssertEqual(row.activity(language: .english), "Generating response")
+    }
+
+    func testProcessingSubagentContainerUsesFriendlyActivity() async {
+        let agent = ToolInProgress(
+            id: "agent", name: "Agent", startTime: Date(timeIntervalSince1970: 300), phase: .running
+        )
+        let row = presentation(phase: .processing, inProgressTools: [agent])
+
+        XCTAssertEqual(row.activity(language: .english), "Subagent working")
+        XCTAssertEqual(row.activity(language: .simplifiedChinese), "子 Agent 正在工作")
     }
 
     func testQuestionActivityOverridesOldMessagesInBothLanguages() async {

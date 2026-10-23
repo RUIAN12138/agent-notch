@@ -66,6 +66,15 @@ struct SessionRowPresentation {
             let tool = MCPToolFormatter.formatToolName(session.pendingToolName ?? "Tool")
             return [tool, session.pendingToolInput].compactMap { $0 }.joined(separator: " · ")
         case .none:
+            switch session.phase {
+            case .processing:
+                return processingActivity(language: language)
+            case .compacting:
+                return language.text("Compacting conversation context", "正在整理对话上下文")
+            default:
+                break
+            }
+
             let message = session.lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let message, !message.isEmpty {
                 if session.lastMessageRole == "tool", let tool = session.lastToolName {
@@ -78,6 +87,33 @@ struct SessionRowPresentation {
             }
             return language.text("Open the conversation to continue", "打开原会话继续")
         }
+    }
+
+    /// Transcript snapshots are not a reliable indicator of what is happening
+    /// now: during a new turn they may still end with the previous assistant or
+    /// tool message. Prefer a live tracked tool, otherwise describe generation
+    /// without presenting stale transcript content as the current step.
+    private func processingActivity(language: AppLanguage) -> String {
+        let terminalBoundary = session.toolTracker.terminalBoundaryAt ?? .distantPast
+        let currentTool = session.toolTracker.inProgress.values
+            .filter { $0.phase != .pendingApproval && $0.startTime >= terminalBoundary }
+            .max { lhs, rhs in
+                if lhs.startTime == rhs.startTime {
+                    return lhs.id < rhs.id
+                }
+                return lhs.startTime < rhs.startTime
+            }
+
+        guard let currentTool else {
+            return language.text("Generating response", "正在生成回复")
+        }
+
+        if ToolCallItem.isSubagentContainerName(currentTool.name) {
+            return language.text("Subagent working", "子 Agent 正在工作")
+        }
+
+        let tool = MCPToolFormatter.formatToolName(currentTool.name)
+        return language.text("Running \(tool)", "正在执行：\(tool)")
     }
 }
 
