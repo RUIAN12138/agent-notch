@@ -23,6 +23,7 @@ enum AgentTransportError: LocalizedError {
     case requiresTmux
     case tmuxPaneNotFound
     case tmuxSendFailed
+    case messagingUnsupported(agentName: String)
 
     var errorDescription: String? {
         switch self {
@@ -34,6 +35,8 @@ enum AgentTransportError: LocalizedError {
             return "Could not find the agent's tmux pane."
         case .tmuxSendFailed:
             return "Could not send the message to tmux."
+        case .messagingUnsupported(let agentName):
+            return "Messaging is not available for \(agentName)."
         }
     }
 }
@@ -42,17 +45,20 @@ enum AgentTransportKind: Equatable {
     case codexCLI
     case codeBuddyCLI
     case tmux
+    case unsupported
 }
 
 enum AgentTransportRouter {
     static func kind(for source: AgentSource) -> AgentTransportKind {
-        switch source {
-        case .codex:
+        switch source.rawValue {
+        case AgentSource.codex.rawValue:
             return .codexCLI
-        case .codebuddy:
+        case AgentSource.codebuddy.rawValue:
             return .codeBuddyCLI
-        default:
+        case AgentSource.claude.rawValue, AgentSource.cursor.rawValue:
             return .tmux
+        default:
+            return .unsupported
         }
     }
 
@@ -80,7 +86,23 @@ enum AgentTransportRouter {
             return CodeBuddyCLITransport()
         case .tmux:
             return TmuxAgentTransport()
+        case .unsupported:
+            return UnsupportedAgentTransport(agentName: source.displayName)
         }
+    }
+}
+
+private struct UnsupportedAgentTransport: AgentTransport {
+    let agentName: String
+
+    var isAvailable: Bool { false }
+
+    func send(
+        _ text: String,
+        to session: SessionState,
+        onStdoutChunk: @escaping @Sendable (Data) -> Void
+    ) async throws -> String {
+        throw AgentTransportError.messagingUnsupported(agentName: agentName)
     }
 }
 

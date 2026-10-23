@@ -432,14 +432,7 @@ struct LifecycleDiagnosticsView: View {
     }
 
     private func sourceTitle(_ source: String) -> String {
-        switch source {
-        case "claude": return "Claude"
-        case "codex": return "Codex"
-        case "codebuddy": return "CodeBuddy"
-        case "gemini": return "Gemini"
-        case "cursor": return "Cursor"
-        default: return t("Agent", "智能体")
-        }
+        AgentSource(rawValue: source)?.displayName ?? t("Agent", "智能体")
     }
 
     private func originTitle(_ origin: String) -> String {

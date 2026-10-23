@@ -212,9 +212,9 @@ struct InstanceRow: View {
     }
 
     private var focusLabel: String {
-        switch session.source {
-        case .codex: t("Open in Codex", "在 Codex 中打开")
-        case .codebuddy: t("Open in WorkBuddy", "在 WorkBuddy 中打开")
+        switch session.source.rawValue {
+        case AgentSource.codex.rawValue: t("Open in Codex", "在 Codex 中打开")
+        case AgentSource.codebuddy.rawValue: t("Open in WorkBuddy", "在 WorkBuddy 中打开")
         default: t("Open in terminal", "在终端中打开")
         }
     }

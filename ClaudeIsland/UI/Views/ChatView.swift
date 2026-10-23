@@ -734,6 +734,12 @@ struct ChatView: View {
     private var canSendMessages: Bool {
         guard !isSendingMessage else { return false }
 
+        // Only sources with an explicitly registered, session-safe transport
+        // may receive messages. Generic lifecycle integrations are read-only.
+        if !session.source.supportsMessaging {
+            return false
+        }
+
         if session.source == .codex || session.source == .codebuddy {
             guard AgentTransportRouter.isAvailable(for: session.source) else {
                 return false
@@ -768,6 +774,12 @@ struct ChatView: View {
             return !AgentTransportRouter.isAvailable(for: .codebuddy)
                 ? "Install CodeBuddy CLI to enable messaging"
                 : "Wait for CodeBuddy to finish"
+        }
+        if session.source.isCustom {
+            return "Messaging is not available for \(session.source.displayName)"
+        }
+        if session.source == .unknown {
+            return "Messaging is not available for this agent"
         }
         return "Open the agent in tmux to enable messaging"
     }

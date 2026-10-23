@@ -287,6 +287,15 @@ actor SessionStore {
         let eventSource = event.source == nil
             ? AgentSource.claude
             : AgentSource(hookValue: event.source)
+        guard eventSource.acceptsHookEvent(
+            event.event,
+            status: event.status
+        ) else {
+            Self.logger.info(
+                "Ignoring unsupported observation-only event \(event.event, privacy: .public) from \(eventSource.rawValue, privacy: .public)"
+            )
+            return
+        }
         let eventProjectName = URL(
             fileURLWithPath: event.cwd
         ).lastPathComponent
@@ -554,7 +563,9 @@ actor SessionStore {
             )
         }
 
-        if fileSyncEnabled && event.shouldSyncFile {
+        if fileSyncEnabled,
+           eventSource.supportsTranscriptSync,
+           event.shouldSyncFile {
             scheduleFileSync(sessionId: sessionId, cwd: event.cwd)
         }
     }

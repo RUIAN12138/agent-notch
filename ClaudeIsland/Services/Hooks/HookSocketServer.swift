@@ -94,6 +94,12 @@ struct HookEvent: Codable, Sendable {
 
     /// Whether this event expects a response (permission request)
     nonisolated var expectsResponse: Bool {
+        let eventSource = source == nil
+            ? AgentSource.claude
+            : AgentSource(hookValue: source)
+        guard eventSource.supportsInteractiveDecisions else {
+            return false
+        }
         guard status == "waiting_for_approval" else { return false }
         if event == "PermissionRequest" {
             return true

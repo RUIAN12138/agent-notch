@@ -181,6 +181,14 @@ Vibe Island `1.0.55` 的官方更新说明声称可以在刘海中回答 Codex �
 
 本轮同时新增 `SessionStoreLifecycleTests.testSuspendedHistorySnapshotCannotOverrideNewerStopHook`，用注入的历史快照和可控异步闸门验证：旧用户消息快照在解析挂起期间遇到较新的 Stop Hook，之后恢复也不得把已完成会话重新判为 processing；XCTest 观察到 `.activeOlderThanHook`，完成时间保持 Hook 边界。本机生命周期套件及完整 macOS XCTest 均通过。此项是 Agent Notch 自身的状态时序回归测试，不是竞品运行观察或真实桌面验收。
 
+### 自定义 Agent 生命周期观察接入
+
+Vibe Island 官方[自定义 Agent 文档](https://vibeisland.app/docs/custom-agents/)及[集成指南](https://vibeisland.app/docs/custom-agents-agent-guide/)采用每个事件调用一次命令的轻量扩展方式，并列出 SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop、StopFailure、SessionEnd 等生命周期点。此处依据的是公开文档，不是 REA 私有二进制证据或运行时观察。
+
+Agent Notch 原本 Bridge 接受任意 `--source`，但来源身份在 Swift 中会折叠为“Agent”，消息发送默认又会回落到 tmux；Bridge 也可能为未知 Agent 写入包含提示词/工具内容的合成 transcript。现已将来源改为安全 slug 并保留其显示名称；自定义来源只能报告受限的生命周期/工具事件，不写合成 transcript、不传原始工具输入、不提供消息发送或权限决策通道。既有明确支持的内置 Agent 仍使用原路由。接入示例和限制见 [AgentBridge 自定义 Agent 只读生命周期说明](../AgentBridge/docs/custom-agent-observer.md)。
+
+该实现只采用“可插拔生命周期事件”这一优势，没有照搬 Vibe Island 的 RemoteAgent manifest、字段映射或其尚未核验的运行时行为；完整兼容仍需针对每个 Agent 的官方 Hook 语义做独立适配与真实环境验收。
+
 ### 活动显示器跟随（Boring Notch `v2.8-rc.2` 官方源码补充）
 
 官方 [`v2.8-rc.2` 发布说明](https://github.com/TheBoredTeam/boring.notch/releases/tag/v2.8-rc.2)列出活动显示器跟随设置；合并的 [PR #1659](https://github.com/TheBoredTeam/boring.notch/pull/1659) 和实现提交 [`094d8a8`](https://github.com/TheBoredTeam/boring.notch/commit/094d8a8) 显示它通过监听 `NSWorkspaceActiveDisplayDidChangeNotification`，在单窗口模式下重新定位刘海；后续提交 [`4222408`](https://github.com/TheBoredTeam/boring.notch/commit/4222408) 将显示偏好收敛为持久化枚举，并保留旧偏好迁移。以上是官方源码/发行说明观察，不是已检查的 `2.7.3` DMG 内容或 `v2.8-rc.2` 二进制运行证明。

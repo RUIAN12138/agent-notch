@@ -15,6 +15,109 @@ BRIDGE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BRIDGE)
 
 
+class GenericAgentSourceTests(unittest.TestCase):
+    def test_custom_source_is_normalized_and_restricted_to_safe_slugs(self):
+        self.assertEqual(BRIDGE.normalize_agent_source(" My_Agent-v2 "), "my_agent-v2")
+        self.assertEqual(BRIDGE.normalize_agent_source("../outside"), "unknown")
+        self.assertEqual(BRIDGE.normalize_agent_source(""), "unknown")
+        self.assertEqual(
+            BRIDGE.parse_args(["--source", "My-Agent"])["source"],
+            "my-agent",
+        )
+
+    def test_observation_only_sources_cannot_emit_decision_events(self):
+        for event in (
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "PostToolUse",
+            "PostToolUseFailure",
+            "Stop",
+            "StopFailure",
+            "SessionEnd",
+        ):
+            with self.subTest(event=event):
+                self.assertTrue(BRIDGE.allows_agent_event("my-agent", event))
+
+        for event in ("PermissionRequest", "PermissionDenied", "Notification", "SubagentStart"):
+            with self.subTest(event=event):
+                self.assertFalse(BRIDGE.allows_agent_event("my-agent", event))
+
+        self.assertTrue(BRIDGE.allows_agent_event("claude", "PermissionRequest"))
+
+    def test_custom_source_never_writes_synthetic_conversation(self):
+        with tempfile.TemporaryDirectory() as home, patch.dict(
+            os.environ,
+            {"HOME": home, "CLAUDE_CONFIG_DIR": ""},
+            clear=False,
+        ):
+            BRIDGE.write_synthetic(
+                "my-agent",
+                "session-1",
+                "/tmp/custom-agent",
+                "UserPromptSubmit",
+                {"prompt": "private prompt"},
+            )
+
+            self.assertFalse((Path(home) / ".claude" / "projects").exists())
+
+    def test_custom_pretool_event_drops_raw_tool_input(self):
+        payload = {
+            "session_id": "custom-session",
+            "cwd": "/tmp/custom-agent",
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Shell",
+            "tool_input": {"command": "private command"},
+        }
+        sent = []
+
+        def capture_event(socket_path, state, expect_reply):
+            sent.append(state)
+            return False
+
+        with patch.object(
+            BRIDGE, "get_tty", return_value=None
+        ), patch.object(
+            BRIDGE, "write_synthetic"
+        ), patch.object(
+            BRIDGE, "process_expired_cleanups"
+        ), patch.object(
+            BRIDGE, "persist_session_snapshot"
+        ), patch.object(
+            BRIDGE, "send_event", side_effect=capture_event
+        ), patch.object(
+            BRIDGE.sys, "argv", ["notch-bridge.py", "--source", "my-agent"]
+        ), patch.object(
+            BRIDGE.sys, "stdin", io.StringIO(json.dumps(payload))
+        ), self.assertRaises(SystemExit):
+            BRIDGE.main()
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["source"], "my-agent")
+        self.assertEqual(sent[0]["tool"], "Shell")
+        self.assertNotIn("tool_input", sent[0])
+
+    def test_custom_permission_event_exits_without_waiting_for_a_decision(self):
+        payload = {
+            "session_id": "custom-session",
+            "cwd": "/tmp/custom-agent",
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Shell",
+            "tool_input": {"command": "private command"},
+        }
+        with patch.object(
+            BRIDGE.sys, "argv", ["notch-bridge.py", "--source", "my-agent"]
+        ), patch.object(
+            BRIDGE.sys, "stdin", io.StringIO(json.dumps(payload))
+        ), patch.object(
+            BRIDGE, "send_event"
+        ) as send_event, self.assertRaises(SystemExit) as exit_context:
+            BRIDGE.main()
+
+        self.assertEqual(exit_context.exception.code, 0)
+        send_event.assert_not_called()
+
+
 class SyntheticTranscriptTests(unittest.TestCase):
     def test_synthetic_transcript_uses_persisted_custom_claude_dir(self):
         with tempfile.TemporaryDirectory() as home, patch.dict(
@@ -897,6 +1000,8 @@ class InteractiveDecisionTests(unittest.TestCase):
         ), patch.object(
             BRIDGE, "send_event", return_value=True
         ), patch.object(
+            BRIDGE.sys, "argv", ["notch-bridge.py", "--source", "codex"]
+        ), patch.object(
             BRIDGE.sys, "stdin", io.StringIO(json.dumps(payload))
         ), patch.object(
             BRIDGE.sys, "stdout", stdout
@@ -931,6 +1036,8 @@ class InteractiveDecisionTests(unittest.TestCase):
             BRIDGE, "persist_session_snapshot"
         ), patch.object(
             BRIDGE, "send_event", return_value=False
+        ), patch.object(
+            BRIDGE.sys, "argv", ["notch-bridge.py", "--source", "codex"]
         ), patch.object(
             BRIDGE.sys, "stdin", io.StringIO(json.dumps(payload))
         ), patch.object(

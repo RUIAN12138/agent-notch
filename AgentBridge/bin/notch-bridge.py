@@ -87,10 +87,37 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 # new activity cancels the pending removal.
 COMPLETED_TTL = bounded_env_int("NOTCH_COMPLETED_TTL", 18000)
 SAFE_SESSION_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+SAFE_AGENT_SOURCE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+BUILT_IN_AGENT_SOURCES = {"claude", "codex", "codebuddy", "gemini", "cursor"}
+OBSERVATION_ONLY_EVENTS = {
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "StopFailure",
+    "SessionEnd",
+}
 APPROVAL_POLICY_FILE = os.path.join(
     os.path.expanduser("~"), ".multiagent-notch", "approval-policy.json"
 )
 APPROVAL_MODES = {"ask", "auto", "trusted"}
+
+
+def normalize_agent_source(value):
+    """Keep source identifiers safe for persistence, logs, and UI labels."""
+    candidate = value.strip().lower() if isinstance(value, str) else ""
+    return candidate if SAFE_AGENT_SOURCE.fullmatch(candidate) else "unknown"
+
+
+def is_observation_only_source(source):
+    return source not in BUILT_IN_AGENT_SOURCES
+
+
+def allows_agent_event(source, event):
+    """Generic sources may report lifecycle/tool activity, never decisions."""
+    return not is_observation_only_source(source) or event in OBSERVATION_ONLY_EVENTS
 
 
 def claude_config_dir():
@@ -128,7 +155,7 @@ def parse_args(argv):
     while i < len(argv):
         a = argv[i]
         if a == "--source" and i + 1 < len(argv):
-            opts["source"] = argv[i + 1]; i += 2
+            opts["source"] = normalize_agent_source(argv[i + 1]); i += 2
         elif a == "--socket" and i + 1 < len(argv):
             opts["socket"] = argv[i + 1]; i += 2
         elif a == "--event" and i + 1 < len(argv):
@@ -339,6 +366,8 @@ def _codex_thread_title(session_id):
 
 
 def write_synthetic(source, session_id, cwd, event, data):
+    if is_observation_only_source(source):
+        return
     if source == "claude":          # Claude has a real transcript already
         return
     if os.environ.get("NOTCH_NO_SYNTHETIC") == "1":
@@ -1096,6 +1125,11 @@ def main():
 
     event = data.get("hook_event_name") or opts["event"] or ""
     session_id = data.get("session_id") or f"{source}-{os.getppid()}"
+    if not allows_agent_event(source, event):
+        # Unsupported events must be invisible to the app and must never keep
+        # an agent hook blocked on an approval UI it cannot answer.
+        sys.exit(0)
+
     cwd = data.get("cwd", "")
     tool_input = data.get("tool_input", {})
     status = map_status(event)
@@ -1147,6 +1181,11 @@ def main():
             state["tool_use_id"] = permission_tool_use_id(session_id, tuid)
         elif tuid:
             state["tool_use_id"] = tuid
+
+    if is_observation_only_source(source):
+        # Tool names are useful status, but generic integrations do not send
+        # prompts or raw tool inputs into Agent Notch's transcript pipeline.
+        state.pop("tool_input", None)
 
     if event == "Notification":
         ntype = data.get("notification_type")
