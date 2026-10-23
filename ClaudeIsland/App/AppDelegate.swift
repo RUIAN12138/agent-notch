@@ -98,9 +98,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         shortcutController?.start()
 
-        screenObserver = ScreenObserver { [weak self] in
-            self?.handleScreenChange()
-        }
+        screenObserver = ScreenObserver(
+            onScreenChange: { [weak self] in
+                self?.handleScreenChange()
+            },
+            onActiveDisplayChange: { [weak self] in
+                self?.handleActiveDisplayChange()
+            }
+        )
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             self?.showOnboardingIfNeeded()
@@ -108,6 +113,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleScreenChange() {
+        _ = windowManager?.setupNotchWindow()
+    }
+
+    private func handleActiveDisplayChange() {
+        guard ScreenSelector.shared.selectionMode == .activeDisplay else { return }
         _ = windowManager?.setupNotchWindow()
     }
 

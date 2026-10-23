@@ -72,6 +72,16 @@ struct ScreenPickerRow: View {
                         collapseAfterDelay()
                     }
 
+                    ScreenOptionRow(
+                        label: "Active display",
+                        sublabel: "Follow the display with the active app",
+                        isSelected: screenSelector.selectionMode == .activeDisplay
+                    ) {
+                        screenSelector.selectActiveDisplay()
+                        triggerWindowRecreation()
+                        collapseAfterDelay()
+                    }
+
                     // Individual screens
                     ForEach(screenSelector.availableScreens, id: \.self) { screen in
                         ScreenOptionRow(
@@ -96,6 +106,8 @@ struct ScreenPickerRow: View {
         switch screenSelector.selectionMode {
         case .automatic:
             return "Auto"
+        case .activeDisplay:
+            return "Active display"
         case .specificScreen:
             if let screen = screenSelector.selectedScreen {
                 return screen.localizedName
@@ -122,7 +134,7 @@ struct ScreenPickerRow: View {
     private func triggerWindowRecreation() {
         // Notify to recreate the window
         NotificationCenter.default.post(
-            name: NSApplication.didChangeScreenParametersNotification,
+            name: .agentNotchScreenSelectionDidChange,
             object: nil
         )
     }

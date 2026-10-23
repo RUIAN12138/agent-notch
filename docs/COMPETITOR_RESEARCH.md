@@ -169,9 +169,9 @@ Vibe Island 官方 `1.0.54` 更新记录声称，Claude 活动会话卡片现在
 
 ### Boring Notch 当前公开发布列表
 
-本轮检查的[官方 Releases 页面](https://github.com/TheBoredTeam/boring.notch/releases)当前展示 `Latest Nightly` 与 `v2.8-rc.1`，其发布说明提及高 CPU、通知 UI、镜像尺寸及音频输出悬停方面的修复。该页面与源码说明均属于上游材料，不证明对应二进制在本机的实际表现；本项目的 REA 包证据仍以 Boring Notch `2.7.3` 为准，源代码设计参考仍明确区分 `v2.7.3` 与 `v2.8-rc.1`。
+后续复查的[官方 Releases 页面](https://github.com/TheBoredTeam/boring.notch/releases)列出 `Latest Nightly` 与 `v2.8-rc.2`；其发布说明提及活动显示器跟随、通知 UI、镜像尺寸及音频输出悬停方面的变化。这些属于上游发布材料，不证明对应二进制在本机的实际表现；本项目的 REA 包证据仍以 Boring Notch `2.7.3` 为准，源码设计参考则分别标注具体 tag/commit。
 
-**版本记录纠偏：**较早条目提到官方 Releases 页面还列有 `v2.8-rc.2`，与本轮读取到的页面列表不一致。当前不再把 `rc.2` 标为已核验的当前发布；如需追溯它，应另行核实对应 tag、源码和日期，不能据旧记录推断发行状态。
+**记录纠偏：**早先一次页面读取只记录到 `rc.1`，现已由后续对官方 Releases/tag 页的复查更正；不能据此推断 `v2.8-rc.2` 二进制已被本机静态分析或运行。
 
 ### Codex 原生问题的协议边界核验
 
@@ -180,6 +180,12 @@ Vibe Island `1.0.55` 的官方更新说明声称可以在刘海中回答 Codex �
 当前 Agent Notch 读取 Codex rollout/session 文件；回复路径则调用独立的 `codex exec resume --all --skip-git-repo-check` 进程。它没有持有发出该实验性 server request 的 app-server 连接，因此不能用“读取到问题后另开 CLI 发送文本”冒充同一请求的应答。当前先不实现伪应答，也不引入未审查的代理/接管通道；待上游协议稳定性、请求 ID 与并行问题、取消/超时，以及 Desktop/CLI 覆盖面得到验证后再评估集成。后台命令与端口操作也继续暂缓，因其权限面和验收成本更大。
 
 本轮同时新增 `SessionStoreLifecycleTests.testSuspendedHistorySnapshotCannotOverrideNewerStopHook`，用注入的历史快照和可控异步闸门验证：旧用户消息快照在解析挂起期间遇到较新的 Stop Hook，之后恢复也不得把已完成会话重新判为 processing；XCTest 观察到 `.activeOlderThanHook`，完成时间保持 Hook 边界。本机生命周期套件及完整 macOS XCTest 均通过。此项是 Agent Notch 自身的状态时序回归测试，不是竞品运行观察或真实桌面验收。
+
+### 活动显示器跟随（Boring Notch `v2.8-rc.2` 官方源码补充）
+
+官方 [`v2.8-rc.2` 发布说明](https://github.com/TheBoredTeam/boring.notch/releases/tag/v2.8-rc.2)列出活动显示器跟随设置；合并的 [PR #1659](https://github.com/TheBoredTeam/boring.notch/pull/1659) 和实现提交 [`094d8a8`](https://github.com/TheBoredTeam/boring.notch/commit/094d8a8) 显示它通过监听 `NSWorkspaceActiveDisplayDidChangeNotification`，在单窗口模式下重新定位刘海；后续提交 [`4222408`](https://github.com/TheBoredTeam/boring.notch/commit/4222408) 将显示偏好收敛为持久化枚举，并保留旧偏好迁移。以上是官方源码/发行说明观察，不是已检查的 `2.7.3` DMG 内容或 `v2.8-rc.2` 二进制运行证明。
+
+Agent Notch 采纳的是“默认不改变既有行为、显式选择后才跟随活动显示器”的兼容原则：新增 `activeDisplay` 选择模式，复用屏幕切换时重建窗口的路径，切换时由新窗口以收起态呈现；活动屏幕不可解析时回退到内置屏幕。系统屏幕参数变更仍保留原有防抖，而用户手动选择屏幕使用独立的应用通知，不再伪装成硬件变化。自动模式仍优先内置屏幕，指定屏幕仍通过已保存标识恢复。新策略测试覆盖活动屏幕优先级、回退、旧偏好值和同名显示器身份；本轮完整 macOS XCTest 为 `419 passed / 0 failed`。这些是本地构建/测试证据，不是多显示器桌面端到端验收。
 
 ### 本轮结论与下一候选
 

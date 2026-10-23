@@ -17,6 +17,7 @@ class WindowManager {
     private(set) var windowController: NotchWindowController?
     private var isInitialLaunch = true
     private var currentScreenFrame: NSRect?
+    private var currentScreenIdentifier: ScreenIdentifier?
 
     /// Set up or recreate the notch window
     func setupNotchWindow() -> NotchWindowController? {
@@ -32,7 +33,11 @@ class WindowManager {
         // Skip recreation if screen hasn't meaningfully changed
         if let existingController = windowController,
            let existingFrame = currentScreenFrame,
-           existingFrame == screen.frame {
+           existingFrame == screen.frame,
+           let existingIdentifier = currentScreenIdentifier,
+           existingIdentifier.identifiesSameDisplay(
+               as: ScreenIdentifier(screen: screen)
+           ) {
             logger.debug("Screen unchanged, skipping window recreation")
             return existingController
         }
@@ -48,6 +53,7 @@ class WindowManager {
         }
 
         currentScreenFrame = screen.frame
+        currentScreenIdentifier = ScreenIdentifier(screen: screen)
         windowController = NotchWindowController(screen: screen, animateOnLaunch: shouldAnimate)
         windowController?.showWindow(nil)
 

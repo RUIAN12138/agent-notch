@@ -1058,13 +1058,18 @@ struct NotchStudioSettingsView: View {
                     settingLabel(
                         t("Display", "显示屏"),
                         detail: t(
-                            "Choose where the notch should live.",
-                            "选择刘海所在的屏幕。"
+                            screenSelector.selectionMode == .activeDisplay
+                                ? "Follow the display with the active app."
+                                : "Choose where the notch should live.",
+                            screenSelector.selectionMode == .activeDisplay
+                                ? "跟随当前活动应用所在的显示器。"
+                                : "选择刘海所在的屏幕。"
                         )
                     )
                     Spacer()
                     Picker(t("Display", "显示屏"), selection: screenBinding) {
                         Text(t("Automatic", "自动")).tag("automatic")
+                        Text(t("Active display", "活动显示器")).tag("activeDisplay")
                         ForEach(screenSelector.availableScreens, id: \.self) { screen in
                             Text(screen.localizedName).tag(screen.localizedName)
                         }
@@ -1149,21 +1154,27 @@ struct NotchStudioSettingsView: View {
     private var screenBinding: Binding<String> {
         Binding(
             get: {
-                if screenSelector.selectionMode == .automatic {
+                switch screenSelector.selectionMode {
+                case .automatic:
                     return "automatic"
+                case .activeDisplay:
+                    return "activeDisplay"
+                case .specificScreen:
+                    return screenSelector.selectedScreen?.localizedName ?? "automatic"
                 }
-                return screenSelector.selectedScreen?.localizedName ?? "automatic"
             },
             set: { value in
                 if value == "automatic" {
                     screenSelector.selectAutomatic()
+                } else if value == "activeDisplay" {
+                    screenSelector.selectActiveDisplay()
                 } else if let screen = screenSelector.availableScreens.first(
                     where: { $0.localizedName == value }
                 ) {
                     screenSelector.selectScreen(screen)
                 }
                 NotificationCenter.default.post(
-                    name: NSApplication.didChangeScreenParametersNotification,
+                    name: .agentNotchScreenSelectionDidChange,
                     object: nil
                 )
             }
