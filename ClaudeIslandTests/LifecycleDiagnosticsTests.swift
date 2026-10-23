@@ -100,6 +100,11 @@ final class LifecycleDiagnosticsTests: XCTestCase {
         XCTAssertFalse(try DiagnosticsReportFormatter.json(diagnostics).contains(secret))
     }
 
+    func testFailedPhaseIsExplicitInDiagnosticsValue() {
+        XCTAssertEqual(LifecyclePhaseKind(.failed), .failed)
+        XCTAssertEqual(LifecyclePhaseKindValue(.failed), .failed)
+    }
+
     func testNonHookObservationCannotClaimAHookEventName() {
         let observation = SessionLifecycleObservation(
             sessionId: "fixture", cwd: "/tmp/fixture", source: .claude,

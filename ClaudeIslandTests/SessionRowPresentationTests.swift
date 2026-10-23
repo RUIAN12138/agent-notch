@@ -39,7 +39,7 @@ final class SessionRowPresentationTests: XCTestCase {
     }
 
     func testNonApprovalPhasesNeverExposeApprovalInteractions() async {
-        for phase: SessionPhase in [.processing, .compacting, .waitingForInput, .interrupted, .idle, .ended] {
+        for phase: SessionPhase in [.processing, .compacting, .waitingForInput, .interrupted, .failed, .idle, .ended] {
             let row = presentation(phase: phase, message: "Old question", role: "tool", tool: "AskUserQuestion")
             XCTAssertEqual(row.interaction, .none, "Phase: \(phase)")
         }
@@ -67,6 +67,7 @@ final class SessionRowPresentationTests: XCTestCase {
             (request("ExitPlanMode"), .plan),
             (.waitingForInput, .ready),
             (.interrupted, .interrupted),
+            (.failed, .failed),
             (.idle, .idle),
             (.ended, .ended),
         ]
@@ -84,6 +85,7 @@ final class SessionRowPresentationTests: XCTestCase {
             (.processing, .working), (.compacting, .compacting),
             (request("Bash"), .approval), (request("AskUserQuestion"), .question),
             (request("ExitPlanMode"), .plan), (.interrupted, .interrupted),
+            (.failed, .failed),
             (.idle, .idle), (.ended, .ended),
         ]
         for (phase, expected) in cases {
@@ -117,6 +119,19 @@ final class SessionRowPresentationTests: XCTestCase {
         XCTAssertEqual(row.status, .interrupted)
         XCTAssertEqual(row.activity(language: .english), "Turn was interrupted")
         XCTAssertEqual(row.activity(language: .simplifiedChinese), "本轮已中断")
+        XCTAssertTrue(row.canArchive)
+    }
+
+    func testFailedRowUsesItsTerminalStateInsteadOfStaleTranscript() async {
+        let row = presentation(
+            phase: .failed,
+            message: "Old turn finished successfully",
+            role: "assistant"
+        )
+
+        XCTAssertEqual(row.status, .failed)
+        XCTAssertEqual(row.activity(language: .english), "Turn failed")
+        XCTAssertEqual(row.activity(language: .simplifiedChinese), "本轮失败")
         XCTAssertTrue(row.canArchive)
     }
 

@@ -426,6 +426,7 @@ struct LifecycleDiagnosticsView: View {
         case .waitingForApproval: return t("Waiting for approval", "等待审批")
         case .compacting: return t("Compacting", "压缩上下文")
         case .interrupted: return t("Interrupted", "已中断")
+        case .failed: return t("Failed", "失败")
         case .ended: return t("Ended", "已结束")
         }
     }

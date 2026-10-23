@@ -147,6 +147,10 @@ nonisolated enum CodexTaskLifecycle: Equatable, Sendable {
     /// This is terminal for the current generation, but not a successful
     /// completion and must not produce completion attention.
     case interrupted(Date?)
+    /// Codex explicitly reported that the current turn failed. This is
+    /// terminal for the current generation, but is distinct from cancellation
+    /// and successful completion.
+    case failed(Date?)
     case missing
     case unknown
 }
@@ -976,12 +980,12 @@ actor ConversationParser {
                         return UInt64(lineStart)
                     case "turn_aborted", "task_aborted", "task_cancelled",
                          "task_canceled", "turn_cancelled", "turn_canceled",
-                         "thread_rolled_back":
-                        // Keep an abort even if a delayed completion row was
-                        // appended afterward; the row is stale unless a newer
-                        // task_started established another generation.
+                         "thread_rolled_back", "task_failed", "turn_failed":
+                        // Keep interruption/failure even if a delayed success
+                        // row was appended afterward; it is stale unless a
+                        // newer task_started established another generation.
                         return UInt64(lineStart)
-                    case "task_complete", "task_failed", "turn_failed":
+                    case "task_complete":
                         newestCompletionOffset = newestCompletionOffset ?? lineStart
                     case "agent_message"
                         where payload["phase"] as? String == "final_answer":
@@ -1390,7 +1394,7 @@ actor ConversationParser {
 
         if type == "agent_message",
            payload["phase"] as? String == "final_answer" {
-            guard !isCodexLifecycleInterrupted(state.lifecycle) else {
+            guard !isCodexLifecycleFailureOrInterruption(state.lifecycle) else {
                 return false
             }
             // Codex renders the final response shortly before task_complete.
@@ -1462,10 +1466,15 @@ actor ConversationParser {
             state.pendingToolStartedAt.removeAll()
             state.lifecycle = .interrupted(timestamp)
             return false
-        case "task_complete",
-             "task_failed",
-             "turn_failed":
-            guard !isCodexLifecycleInterrupted(state.lifecycle) else {
+        case "task_failed", "turn_failed":
+            guard !isCodexLifecycleFailureOrInterruption(state.lifecycle) else {
+                return false
+            }
+            state.pendingToolStartedAt.removeAll()
+            state.lifecycle = .failed(timestamp)
+            return false
+        case "task_complete":
+            guard !isCodexLifecycleFailureOrInterruption(state.lifecycle) else {
                 return false
             }
             state.pendingToolStartedAt.removeAll()
@@ -1490,7 +1499,7 @@ actor ConversationParser {
         if type == "message",
            payload["role"] as? String == "assistant",
            payload["phase"] as? String == "final_answer" {
-            guard !isCodexLifecycleInterrupted(state.lifecycle) else {
+            guard !isCodexLifecycleFailureOrInterruption(state.lifecycle) else {
                 return false
             }
             state.pendingToolStartedAt.removeAll()
@@ -1498,7 +1507,7 @@ actor ConversationParser {
             return false
         }
         guard let timestamp,
-              !isCodexLifecycleCompleted(state.lifecycle) else {
+              !isCodexLifecycleTerminal(state.lifecycle) else {
             return false
         }
 
@@ -1577,27 +1586,31 @@ actor ConversationParser {
         switch lifecycle {
         case .active, .activeTool:
             return true
-        case .completed, .interrupted, .missing, .unknown:
+        case .completed, .interrupted, .failed, .missing, .unknown:
             return false
         }
     }
 
-    nonisolated private static func isCodexLifecycleCompleted(
+    nonisolated private static func isCodexLifecycleTerminal(
         _ lifecycle: CodexTaskLifecycle
     ) -> Bool {
         switch lifecycle {
-        case .completed, .interrupted:
+        case .completed, .interrupted, .failed:
             return true
         case .active, .activeTool, .missing, .unknown:
             return false
         }
     }
 
-    nonisolated private static func isCodexLifecycleInterrupted(
+    nonisolated private static func isCodexLifecycleFailureOrInterruption(
         _ lifecycle: CodexTaskLifecycle
     ) -> Bool {
-        if case .interrupted = lifecycle { return true }
-        return false
+        switch lifecycle {
+        case .interrupted, .failed:
+            return true
+        case .active, .activeTool, .completed, .missing, .unknown:
+            return false
+        }
     }
 
     nonisolated private static func refreshCodexToolLifecycle(

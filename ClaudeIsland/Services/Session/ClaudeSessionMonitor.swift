@@ -309,7 +309,8 @@ class ClaudeSessionMonitor: ObservableObject {
         }
         let recentTerminal = sessions
             .filter { session in
-                let terminalAt = session.phase == .interrupted
+                let terminalAt = session.phase == .interrupted ||
+                    session.phase == .failed
                     ? session.lastActivity
                     : session.completedAt
                 guard let terminalAt else { return false }
@@ -317,10 +318,12 @@ class ClaudeSessionMonitor: ObservableObject {
                     SessionRetentionPolicy.completedLifetime
             }
             .sorted {
-                let lhs = ($0.phase == .interrupted
+                let lhs = ($0.phase == .interrupted ||
+                    $0.phase == .failed
                     ? $0.lastActivity
                     : $0.completedAt) ?? .distantPast
-                let rhs = ($1.phase == .interrupted
+                let rhs = ($1.phase == .interrupted ||
+                    $1.phase == .failed
                     ? $1.lastActivity
                     : $1.completedAt) ?? .distantPast
                 return lhs > rhs

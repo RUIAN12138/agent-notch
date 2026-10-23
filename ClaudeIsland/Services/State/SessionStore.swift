@@ -2220,7 +2220,7 @@ actor SessionStore {
 
             // Keep the terminal card briefly for context, but continue native
             // Codex polling above so a genuinely new task can resume it.
-            if session.phase == .interrupted {
+            if session.phase == .interrupted || session.phase == .failed {
                 continue
             }
 
@@ -2333,20 +2333,22 @@ actor SessionStore {
             }
             let previousCompletion = session.completedAt
             let wasInterrupted = session.phase == .interrupted
+            let wasFailed = session.phase == .failed
             snapshot.applying(to: &session)
             if session.phase == .waitingForInput,
                previousCompletion != session.completedAt {
                 finalizeDanglingTools(in: &session, terminalAt: snapshot.completedAt ?? now)
             }
             let didInterrupt = session.phase == .interrupted && !wasInterrupted
-            if didInterrupt {
+            let didFail = session.phase == .failed && !wasFailed
+            if didInterrupt || didFail {
                 finalizeDanglingTools(
                     in: &session,
                     terminalAt: session.lastHookEventAt ?? now
                 )
             }
             sessions[sessionId] = session
-            if didInterrupt {
+            if didInterrupt || didFail {
                 await cleanupExternalLifecycle(
                     sessionId: sessionId,
                     completedAt: session.lastHookEventAt ?? now
@@ -2430,6 +2432,7 @@ actor SessionStore {
         switch (lhs, rhs) {
         case (.active, .active), (.completed, .completed),
              (.interrupted, .interrupted),
+             (.failed, .failed),
              (.missing, .missing), (.unknown, .unknown),
              (.interrupt, .interrupt), (.processExited, .processExited):
             return true
@@ -2465,7 +2468,8 @@ actor SessionStore {
         // is time-based only.
         let sessionsToRemove: [SessionState] = sessions.values.compactMap {
             session -> SessionState? in
-            let terminalAt = session.phase == .interrupted
+            let terminalAt = session.phase == .interrupted ||
+                session.phase == .failed
                 ? session.lastActivity
                 : session.completedAt
             guard let terminalAt else { return nil }
@@ -2517,6 +2521,9 @@ actor SessionStore {
             let isRecentInterruption = session.phase == .interrupted &&
                 now.timeIntervalSince(session.lastActivity) <
                     SessionRetentionPolicy.completedLifetime
+            let isRecentFailure = session.phase == .failed &&
+                now.timeIntervalSince(session.lastActivity) <
+                    SessionRetentionPolicy.completedLifetime
             let livePid = session.pid.flatMap {
                 isProcessRunning(pid: $0) ? $0 : nil
             }
@@ -2524,7 +2531,7 @@ actor SessionStore {
                 session.phase.isActive &&
                 now.timeIntervalSince(session.lastActivity) <
                     codexActiveStaleInterval
-            guard isRecentCompletion || isRecentInterruption ||
+            guard isRecentCompletion || isRecentInterruption || isRecentFailure ||
                     livePid != nil ||
                     hasRecentNativeCodexActivity else {
                 return nil
@@ -2605,7 +2612,8 @@ actor SessionStore {
         let retainedTerminalIds = Set(
             persisted
                 .filter { item in
-                    let terminalAt = item.phase == "interrupted"
+                    let terminalAt = item.phase == "interrupted" ||
+                        item.phase == "failed"
                         ? item.lastActivity
                         : item.completedAt
                     guard let terminalAt else {
@@ -2615,10 +2623,12 @@ actor SessionStore {
                         SessionRetentionPolicy.completedLifetime
                 }
                 .sorted {
-                    let lhs = ($0.phase == "interrupted"
+                    let lhs = ($0.phase == "interrupted" ||
+                        $0.phase == "failed"
                         ? $0.lastActivity
                         : $0.completedAt) ?? .distantPast
-                    let rhs = ($1.phase == "interrupted"
+                    let rhs = ($1.phase == "interrupted" ||
+                        $1.phase == "failed"
                         ? $1.lastActivity
                         : $1.completedAt) ?? .distantPast
                     return lhs > rhs
@@ -2649,8 +2659,11 @@ actor SessionStore {
             let isRecentInterruption = item.phase == "interrupted" &&
                 now.timeIntervalSince(item.lastActivity) <
                     SessionRetentionPolicy.completedLifetime
+            let isRecentFailure = item.phase == "failed" &&
+                now.timeIntervalSince(item.lastActivity) <
+                    SessionRetentionPolicy.completedLifetime
             guard livePid != nil ||
-                    ((isRecentCompletion || isRecentInterruption) &&
+                    ((isRecentCompletion || isRecentInterruption || isRecentFailure) &&
                         retainedTerminalIds.contains(item.sessionId)) else {
                 continue
             }
@@ -2674,6 +2687,8 @@ actor SessionStore {
                 lifecycleCompletion = completedAt ?? now
             } else if case .interrupted = codexLifecycle {
                 lifecycleCompletion = nil
+            } else if case .failed = codexLifecycle {
+                lifecycleCompletion = nil
             } else {
                 lifecycleCompletion = item.completedAt
             }
@@ -2681,10 +2696,26 @@ actor SessionStore {
             switch codexLifecycle {
             case .interrupted:
                 lifecycleInterrupted = true
-            case .active, .activeTool, .completed:
+            case .active, .activeTool, .completed, .failed:
                 lifecycleInterrupted = false
             case .missing, .unknown:
                 lifecycleInterrupted = item.phase == "interrupted"
+            }
+            let lifecycleFailed: Bool
+            switch codexLifecycle {
+            case .failed(let failedAt):
+                let persistedBoundary = max(
+                    max(
+                        item.lastHookEventAt ?? .distantPast,
+                        item.lastCodexTurnStartedAt ?? .distantPast
+                    ),
+                    item.completedAt ?? .distantPast
+                )
+                lifecycleFailed = (failedAt ?? now) >= persistedBoundary
+            case .active, .activeTool, .completed, .interrupted:
+                lifecycleFailed = false
+            case .missing, .unknown:
+                lifecycleFailed = item.phase == "failed"
             }
             let restoredPhase: SessionPhase
             let lifecycleStartsNewerTurn: Bool
@@ -2703,7 +2734,7 @@ actor SessionStore {
                 lifecycleStartsNewerTurn = item.lastHookEventAt.map {
                     toolStartedAt > $0
                 } ?? true
-            case .completed, .interrupted, .missing, .unknown:
+            case .completed, .interrupted, .failed, .missing, .unknown:
                 activeTurnStartedAt = nil
                 activeToolStartedAt = nil
                 lifecycleStartsNewerTurn = false
@@ -2712,6 +2743,8 @@ actor SessionStore {
                 restoredPhase = .processing
             } else if lifecycleInterrupted {
                 restoredPhase = .interrupted
+            } else if lifecycleFailed {
+                restoredPhase = .failed
             } else if lifecycleCompletion != nil {
                 restoredPhase = item.phase == "ended"
                     ? .ended
@@ -2874,6 +2907,9 @@ actor SessionStore {
                     continue
                 }
                 if case .interrupted = lifecycle {
+                    continue
+                }
+                if case .failed = lifecycle {
                     continue
                 }
             }

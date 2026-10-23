@@ -375,6 +375,7 @@ struct InstanceRow: View {
         case .approval, .question, .plan: TerminalColors.amber
         case .completed: TerminalColors.green
         case .interrupted: TerminalColors.dim
+        case .failed: .red
         default: .white.opacity(0.7)
         }
     }
@@ -386,6 +387,7 @@ struct InstanceRow: View {
         case .plan: "doc.text"
         case .completed: "checkmark.circle"
         case .interrupted: "xmark.circle"
+        case .failed: "exclamationmark.circle"
         case .ready: "bubble.left"
         case .ended: "stop.circle"
         case .idle: "circle.dotted"

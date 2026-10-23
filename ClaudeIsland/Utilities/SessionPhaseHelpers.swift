@@ -21,6 +21,8 @@ struct SessionPhaseHelpers {
             return TerminalColors.magenta
         case .idle, .interrupted, .ended:
             return TerminalColors.dim
+        case .failed:
+            return .red
         }
     }
 
@@ -37,6 +39,8 @@ struct SessionPhaseHelpers {
             return "Compacting context..."
         case .interrupted:
             return "Turn interrupted"
+        case .failed:
+            return "Turn failed"
         case .idle:
             return "Idle"
         case .ended:

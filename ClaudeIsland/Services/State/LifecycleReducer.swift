@@ -73,6 +73,7 @@ nonisolated enum LifecycleEvidence: Equatable, Sendable {
     )
     case completed(Date?)
     case interrupted(Date?)
+    case failed(Date?)
     case missing
     case unknown
     case hook(HookLifecycleSignal)
@@ -101,6 +102,8 @@ nonisolated enum LifecycleEvidence: Equatable, Sendable {
             self = .completed(completedAt)
         case .interrupted(let interruptedAt):
             self = .interrupted(interruptedAt)
+        case .failed(let failedAt):
+            self = .failed(failedAt)
         case .missing:
             self = .missing
         case .unknown:
@@ -215,6 +218,7 @@ nonisolated enum LifecycleTransitionReason: String, Equatable, Sendable {
     case newerTurnStarted
     case nativeCompletion
     case nativeInterruption
+    case nativeFailure
     case staleActiveTimedOut
     case unknownActiveTimedOut
     case sourceMissingBeyondGrace
@@ -225,7 +229,10 @@ nonisolated enum LifecycleTransitionReason: String, Equatable, Sendable {
     case completionOlderThanHook
     case completionOlderThanTurn
     case completionAfterInterruption
+    case completionAfterFailure
     case interruptionOlderThanBoundary
+    case failureOlderThanBoundary
+    case failureAfterInterruption
     case interactionHasPriority
     case missingWithinGrace
     case unknownWithinGrace
@@ -289,7 +296,10 @@ nonisolated struct LifecycleTransition: Equatable, Sendable {
              .completionOlderThanHook,
              .completionOlderThanTurn,
              .completionAfterInterruption,
+             .completionAfterFailure,
              .interruptionOlderThanBoundary,
+             .failureOlderThanBoundary,
+             .failureAfterInterruption,
              .sessionNotFound,
              .hookOlderThanBoundary,
              .subagentCompletionCannotResume,
@@ -314,6 +324,7 @@ nonisolated enum LifecyclePhaseKind: String, Equatable, Sendable {
     case waitingForApproval
     case compacting
     case interrupted
+    case failed
     case ended
 
     init(_ phase: SessionPhase) {
@@ -330,6 +341,8 @@ nonisolated enum LifecyclePhaseKind: String, Equatable, Sendable {
             self = .compacting
         case .interrupted:
             self = .interrupted
+        case .failed:
+            self = .failed
         case .ended:
             self = .ended
         }
@@ -435,6 +448,13 @@ nonisolated enum LifecycleReducer {
                 completedAt: completedAt
             )
 
+        case .failed(let failedAt):
+            return reduceFailure(
+                current: current,
+                observation: observation,
+                failedAt: failedAt
+            )
+
         case .interrupted(let interruptedAt):
             return reduceInterruption(
                 current: current,
@@ -528,10 +548,10 @@ nonisolated enum LifecycleReducer {
 
         let interactionHasPriority = next.phase.isWaitingForApproval
 
-        if next.phase == .interrupted {
-            let interruptionBoundary = next.lastHookEventAt ?? next.lastActivity
+        if next.phase == .interrupted || next.phase == .failed {
+            let terminalBoundary = next.lastHookEventAt ?? next.lastActivity
             guard let turnStartedAt,
-                  turnStartedAt > interruptionBoundary else {
+                  turnStartedAt > terminalBoundary else {
                 return LifecycleTransition(
                     mutation: .none,
                     reason: .activeWithoutNewGeneration
@@ -637,10 +657,16 @@ nonisolated enum LifecycleReducer {
                 reason: .sessionNotFound
             )
         }
-        guard next.phase != .interrupted else {
+        if next.phase == .interrupted {
             return LifecycleTransition(
                 mutation: .none,
                 reason: .completionAfterInterruption
+            )
+        }
+        if next.phase == .failed {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .completionAfterFailure
             )
         }
         guard !next.phase.isWaitingForApproval else {
@@ -735,6 +761,62 @@ nonisolated enum LifecycleReducer {
         )
     }
 
+    /// A native failure closes the current generation without creating a
+    /// success timestamp. Only a strictly newer turn may reopen the session.
+    private static func reduceFailure(
+        current: SessionLifecycleSnapshot?,
+        observation: SessionLifecycleObservation,
+        failedAt: Date?
+    ) -> LifecycleTransition {
+        guard var next = current else {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .sessionNotFound
+            )
+        }
+        guard next.phase != .interrupted else {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .failureAfterInterruption
+            )
+        }
+
+        let terminalAt = failedAt ?? observation.observedAt
+        let latestBoundary = max(
+            max(
+                next.lastHookEventAt ?? .distantPast,
+                next.completedAt ?? .distantPast
+            ),
+            next.turnStartedAt ?? .distantPast
+        )
+        guard terminalAt >= latestBoundary else {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .failureOlderThanBoundary
+            )
+        }
+
+        let previous = next
+        next.phase = .failed
+        next.lastActivity = max(next.lastActivity, terminalAt)
+        next.lastHookEventAt = max(
+            next.lastHookEventAt ?? .distantPast,
+            terminalAt
+        )
+        next.completedAt = nil
+        next.codexToolExecutionStartedAt = nil
+        guard next != previous else {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .alreadyCurrent
+            )
+        }
+        return LifecycleTransition(
+            mutation: .update(next),
+            reason: .nativeFailure
+        )
+    }
+
     private static func reduceMissing(
         current: SessionLifecycleSnapshot?,
         observation: SessionLifecycleObservation,
@@ -821,7 +903,7 @@ nonisolated enum LifecycleReducer {
 
         switch signal {
         case .active, .interaction, .compacting:
-            if next.phase == .interrupted {
+            if next.phase == .interrupted || next.phase == .failed {
                 let isCodexGenerationStart = observation.source == .codex &&
                     (observation.hookEventName == .userPromptSubmit ||
                      observation.hookEventName == .preToolUse ||
@@ -902,10 +984,16 @@ nonisolated enum LifecycleReducer {
             )
 
         case .completed:
-            guard next.phase != .interrupted else {
+            if next.phase == .interrupted {
                 return LifecycleTransition(
                     mutation: .none,
                     reason: .completionAfterInterruption
+                )
+            }
+            if next.phase == .failed {
+                return LifecycleTransition(
+                    mutation: .none,
+                    reason: .completionAfterFailure
                 )
             }
             if let turnStartedAt = next.turnStartedAt,

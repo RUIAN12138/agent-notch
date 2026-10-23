@@ -108,6 +108,11 @@ enum SessionPhase: Sendable {
     /// This is terminal for this generation, but is not successful completion.
     case interrupted
 
+    /// The native agent explicitly reported that the current turn failed.
+    /// This is terminal for this generation, but distinct from cancellation
+    /// and successful completion.
+    case failed
+
     /// Session has ended
     case ended
 
@@ -126,6 +131,10 @@ enum SessionPhase: Sendable {
 
         // An explicit native interruption closes the current generation.
         case (_, .interrupted):
+            return true
+
+        // An explicit native failure closes the current generation.
+        case (_, .failed):
             return true
 
         // Idle transitions
@@ -181,6 +190,13 @@ enum SessionPhase: Sendable {
              (.interrupted, .waitingForInput),
              (.interrupted, .waitingForApproval),
              (.interrupted, .compacting):
+            return true
+
+        // A later user turn may resume after a failure.
+        case (.failed, .processing),
+             (.failed, .waitingForInput),
+             (.failed, .waitingForApproval),
+             (.failed, .compacting):
             return true
 
         // Allow staying in same state (no-op transitions)
@@ -243,6 +259,7 @@ extension SessionPhase: Equatable {
             return ctx1 == ctx2
         case (.compacting, .compacting): return true
         case (.interrupted, .interrupted): return true
+        case (.failed, .failed): return true
         case (.ended, .ended): return true
         default: return false
         }
@@ -266,6 +283,8 @@ extension SessionPhase: CustomStringConvertible {
             return "compacting"
         case .interrupted:
             return "interrupted"
+        case .failed:
+            return "failed"
         case .ended:
             return "ended"
         }

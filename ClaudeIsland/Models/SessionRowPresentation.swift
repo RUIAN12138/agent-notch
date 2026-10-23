@@ -8,7 +8,8 @@ struct SessionRowPresentation {
     }
 
     enum Status: Equatable {
-        case working, compacting, approval, question, plan, ready, completed, interrupted, idle, ended
+        case working, compacting, approval, question, plan, ready, completed
+        case interrupted, failed, idle, ended
 
         func title(language: AppLanguage) -> String {
             switch self {
@@ -20,6 +21,7 @@ struct SessionRowPresentation {
             case .ready: language.text("Ready", "等待输入")
             case .completed: language.text("Completed", "已完成")
             case .interrupted: language.text("Interrupted", "已中断")
+            case .failed: language.text("Failed", "失败")
             case .idle: language.text("Idle", "空闲")
             case .ended: language.text("Ended", "已结束")
             }
@@ -49,6 +51,7 @@ struct SessionRowPresentation {
             }
         case .waitingForInput: return session.completedAt == nil ? .ready : .completed
         case .interrupted: return .interrupted
+        case .failed: return .failed
         case .idle: return .idle
         case .ended: return .ended
         }
@@ -56,7 +59,7 @@ struct SessionRowPresentation {
 
     var canArchive: Bool {
         session.phase == .idle || session.phase == .waitingForInput ||
-            session.phase == .interrupted
+            session.phase == .interrupted || session.phase == .failed
     }
 
     func activity(language: AppLanguage) -> String {
@@ -76,6 +79,8 @@ struct SessionRowPresentation {
                 return language.text("Compacting conversation context", "正在整理对话上下文")
             case .interrupted:
                 return language.text("Turn was interrupted", "本轮已中断")
+            case .failed:
+                return language.text("Turn failed", "本轮失败")
             default:
                 break
             }

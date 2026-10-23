@@ -104,9 +104,9 @@ Vibe Island `1.0.54` 官方更新记录还声称：Codex 按 Esc 取消会清除
 
 Agent Notch 原先把 `turn_aborted`、`task_aborted`、`task_cancelled`、`task_canceled`、`turn_cancelled`、`turn_canceled`、`thread_rolled_back` 与 `task_complete` 一并解析成成功完成，导致取消被标为已完成、进入完成保留/通知路径，也可能被迟到的旧活动证据重新显示为工作中。现在解析器为这些取消事件保留独立的 `.interrupted` 生命周期；Reducer 按源时间拒绝较旧中断、阻止同一代的迟到活动或完成记录复活，只允许时间更新的 `task_started` 开启下一代。接受中断时清理挂起审批和未完成工具、取消外部权限请求，并按现有五小时终端会话保留策略保存可归档的“已中断”卡片；该状态没有 `completedAt`，因此不进入成功完成提醒/声音路径。持久化恢复和生命周期诊断也区分 interrupted 与 completed。
 
-本轮仅拆分取消/回滚语义；`task_failed`、`turn_failed` 当前仍沿用成功完成状态，未在本轮改成独立“失败”态，避免把失败误写成“已中断”。这仍是后续可单独处理的状态准确性问题。
+随后继续核对失败时序，发现 `task_failed`、`turn_failed` 仍沿用成功完成状态，而且冷启动边界扫描可能从失败前后的迟到成功行恢复为“已完成”。现为两种失败事件增加独立 `.failed` 生命周期和 UI 状态：解析器将失败与成功/中断分开；尾部失败边界会压过同一代迟到的成功记录，只有较新的 `task_started` 才开启下一代；Reducer 按事件时间拒绝越界失败、同代迟到活动及成功，允许更新回合恢复。SessionStore 在失败时关闭未完成工具与待审批交互、清理外部权限/监听资源，并以终端卡片保存/恢复；失败不生成 `completedAt`，因此不会走成功提醒/声音路径，Codex/CodeBuddy 仍可从失败会话重试。
 
-新增 Codex 原生解析、Reducer 和会话行回归用例覆盖七种取消事件、取消后迟到完成、同代迟到活动拒绝、新一代恢复、待审批覆盖以及不生成完成时间。本轮完整 macOS XCTest 为 `404 passed / 0 failed / 0 skipped`；Xcode 同时报告一条位于既有 `ProcessExecutorTests.swift` 的 QoS priority-inversion 运行时警告。仍是本地 XCTest，不证明真实 Codex GUI 的 Esc 行为或安装后提示/声音验收。
+新增解析器、Reducer、状态行、诊断和冷启动恢复用例，覆盖 `task_failed` / `turn_failed`、失败后迟到完成、下一轮恢复、旧失败边界、无成功时间与持久化恢复。本轮完整 macOS XCTest 为 `412 passed / 0 failed / 0 skipped`；Xcode 另报告一条 `ProcessExecutorTests.swift` 的 QoS priority-inversion 运行时警告。仍是本地自动化证据，不证明真实 Codex GUI、真实失败回合或安装后提示/声音验收。竞品分析仍遵守仅静态证据范围，没有启动 Vibe Island 或 Boring Notch。
 
 ## 转录时间戳精度与生命周期边界
 

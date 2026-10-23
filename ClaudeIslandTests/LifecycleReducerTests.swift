@@ -901,6 +901,109 @@ final class LifecycleReducerTests: XCTestCase {
         XCTAssertEqual(next.lastHookEventAt, interruptedAt)
     }
 
+    func testNativeFailureDismissesApprovalWithoutRecordingCompletion() throws {
+        let startedAt = Date(timeIntervalSince1970: 21_750)
+        let failedAt = startedAt.addingTimeInterval(2)
+        let current = snapshot(
+            phase: .waitingForApproval(PermissionContext(
+                toolUseId: "pending-tool",
+                toolName: "Bash",
+                toolInput: nil,
+                receivedAt: startedAt.addingTimeInterval(1)
+            )),
+            lastActivity: startedAt.addingTimeInterval(1),
+            turnStartedAt: startedAt,
+            codexToolExecutionStartedAt: startedAt.addingTimeInterval(1)
+        )
+
+        let transition = reduce(
+            current: current,
+            observation: observation(
+                .failed(failedAt),
+                observedAt: failedAt,
+                receivedAt: failedAt
+            )
+        )
+
+        XCTAssertEqual(transition.reason, .nativeFailure)
+        let next = try XCTUnwrap(transition.nextSnapshot)
+        XCTAssertEqual(next.phase, .failed)
+        XCTAssertNil(next.completedAt)
+        XCTAssertNil(next.codexToolExecutionStartedAt)
+        XCTAssertEqual(next.lastHookEventAt, failedAt)
+    }
+
+    func testFailedGenerationRejectsLateActivityAndCompletionButAllowsNewTurn() throws {
+        let startedAt = Date(timeIntervalSince1970: 21_850)
+        let failedAt = startedAt.addingTimeInterval(2)
+        let current = snapshot(
+            phase: .failed,
+            lastActivity: failedAt,
+            lastHookEventAt: failedAt,
+            turnStartedAt: startedAt
+        )
+
+        let lateActivity = reduce(
+            current: current,
+            observation: observation(
+                .active(
+                    turnStartedAt: startedAt,
+                    lastEvidenceAt: startedAt.addingTimeInterval(1)
+                ),
+                observedAt: startedAt.addingTimeInterval(1),
+                receivedAt: failedAt.addingTimeInterval(1)
+            )
+        )
+        XCTAssertEqual(lateActivity.mutation, .none)
+        XCTAssertEqual(lateActivity.reason, .activeWithoutNewGeneration)
+
+        let lateCompletion = reduce(
+            current: current,
+            observation: observation(
+                .completed(failedAt.addingTimeInterval(1)),
+                observedAt: failedAt.addingTimeInterval(1),
+                receivedAt: failedAt.addingTimeInterval(1)
+            )
+        )
+        XCTAssertEqual(lateCompletion.mutation, .none)
+        XCTAssertEqual(lateCompletion.reason, .completionAfterFailure)
+
+        let newTurnAt = failedAt.addingTimeInterval(1)
+        let newTurn = reduce(
+            current: current,
+            observation: observation(
+                .active(
+                    turnStartedAt: newTurnAt,
+                    lastEvidenceAt: newTurnAt
+                ),
+                observedAt: newTurnAt,
+                receivedAt: newTurnAt
+            )
+        )
+        XCTAssertEqual(newTurn.nextSnapshot?.phase, .processing)
+        XCTAssertNil(newTurn.nextSnapshot?.completedAt)
+    }
+
+    func testNativeFailureOlderThanHookBoundaryIsRejected() {
+        let hookAt = Date(timeIntervalSince1970: 21_900)
+        let transition = reduce(
+            current: snapshot(
+                lastActivity: hookAt,
+                lastHookEventAt: hookAt,
+                turnStartedAt: hookAt.addingTimeInterval(-2)
+            ),
+            observation: observation(
+                .failed(hookAt.addingTimeInterval(-1)),
+                observedAt: hookAt.addingTimeInterval(-1),
+                receivedAt: hookAt
+            )
+        )
+
+        XCTAssertEqual(transition.mutation, .none)
+        XCTAssertEqual(transition.reason, .failureOlderThanBoundary)
+        XCTAssertFalse(transition.acceptsObservation)
+    }
+
     func testInterruptedGenerationRejectsLateActivityAndCompletionButAllowsNewTurn() throws {
         let startedAt = Date(timeIntervalSince1970: 21_800)
         let interruptedAt = startedAt.addingTimeInterval(2)
@@ -1005,6 +1108,30 @@ final class LifecycleReducerTests: XCTestCase {
                 lastActivity: interruptedAt,
                 lastHookEventAt: interruptedAt,
                 turnStartedAt: interruptedAt.addingTimeInterval(-2)
+            ),
+            observation: observation(
+                .hook(.active),
+                observedAt: promptAt,
+                receivedAt: promptAt,
+                origin: .hook,
+                requestedPhase: .processing,
+                hookEventName: "UserPromptSubmit"
+            )
+        )
+
+        XCTAssertEqual(transition.nextSnapshot?.phase, .processing)
+        XCTAssertNil(transition.nextSnapshot?.completedAt)
+    }
+
+    func testFreshCodexPromptHookCanResumeAFailedSession() {
+        let failedAt = Date(timeIntervalSince1970: 21_990)
+        let promptAt = failedAt.addingTimeInterval(1)
+        let transition = reduce(
+            current: snapshot(
+                phase: .failed,
+                lastActivity: failedAt,
+                lastHookEventAt: failedAt,
+                turnStartedAt: failedAt.addingTimeInterval(-2)
             ),
             observation: observation(
                 .hook(.active),

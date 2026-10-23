@@ -652,6 +652,59 @@ final class CodexNativeConversationTests: XCTestCase {
         )
     }
 
+    func testFailureEventsRemainFailedAfterLateSuccessUntilANewerTurnStarts() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let start = "2026-09-24T08:30:00.000Z"
+        let failedAt = "2026-09-24T08:30:01.000Z"
+        let newerStart = "2026-09-24T08:30:03.000Z"
+        let completedAt = "2026-09-24T08:30:04.000Z"
+
+        for type in ["task_failed", "turn_failed"] {
+            let sessionId = "failed-\(type)"
+            let url = try rolloutURL(root: root, sessionId: sessionId)
+            let parser = ConversationParser(codexSessionsRoot: root)
+            let rows = [
+                try encoded(metadata(sessionId: sessionId, cwd: "/tmp/failed")),
+                try encoded([
+                    "timestamp": start,
+                    "type": "event_msg",
+                    "payload": ["type": "task_started"]
+                ]),
+                try encoded([
+                    "timestamp": failedAt,
+                    "type": "event_msg",
+                    "payload": ["type": type]
+                ]),
+                try encoded([
+                    "timestamp": "2026-09-24T08:30:02.000Z",
+                    "type": "event_msg",
+                    "payload": ["type": "task_complete"]
+                ])
+            ]
+            try writeLines(rows, to: url)
+            guard case .failed = await parser.codexTaskLifecycle(sessionId: sessionId) else {
+                return XCTFail("Expected \(type) to remain a failure after a late completion")
+            }
+
+            try writeLines(rows + [
+                try encoded([
+                    "timestamp": newerStart,
+                    "type": "event_msg",
+                    "payload": ["type": "task_started"]
+                ]),
+                try encoded([
+                    "timestamp": completedAt,
+                    "type": "event_msg",
+                    "payload": ["type": "task_complete"]
+                ])
+            ], to: url, options: .atomic)
+            guard case .completed = await parser.codexTaskLifecycle(sessionId: sessionId) else {
+                return XCTFail("A newer task should be allowed to complete after \(type)")
+            }
+        }
+    }
+
     func testUnrelatedRolloutWriteDoesNotRefreshActiveEvidence() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

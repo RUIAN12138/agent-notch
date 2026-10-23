@@ -35,7 +35,7 @@ enum SessionNavigationPolicy {
         switch phase {
         case .waitingForApproval, .processing, .compacting: return 0
         case .waitingForInput: return 1
-        case .idle, .interrupted, .ended: return 2
+        case .idle, .interrupted, .failed, .ended: return 2
         }
     }
 }
