@@ -84,6 +84,12 @@ actor SessionStore {
     /// All sessions keyed by sessionId
     private var sessions: [String: SessionState] = [:]
 
+    /// A removed hook session no longer carries its lifecycle cursor. Keep a
+    /// small in-memory tombstone so a delayed pre-removal activity event cannot
+    /// recreate a Working card after SessionEnd/SessionExpired was accepted.
+    private var removedSessionBoundaries: [String: Date] = [:]
+    private static let removedSessionBoundaryCapacity = 512
+
     /// Bounded, privacy-minimized reasons behind native lifecycle decisions.
     /// This remains in memory until a future diagnostics UI exposes it.
     private var lifecycleTraceEntries: [(
@@ -311,6 +317,20 @@ actor SessionStore {
             return
         }
 
+        if let removedAt = removedSessionBoundaries[sessionId] {
+            let isFreshRootStart = event.event == "SessionStart" ||
+                event.event == "UserPromptSubmit"
+            guard isFreshRootStart, observedAt > removedAt else {
+                Self.logger.info(
+                    "Ignoring hook after removed session boundary for \(sessionId.prefix(8), privacy: .public)"
+                )
+                return
+            }
+            // A later root start is a legitimate new generation, including a
+            // resumed CLI that reuses its session ID.
+            removedSessionBoundaries.removeValue(forKey: sessionId)
+        }
+
         let isNewSession = !sessions.keys.contains(sessionId)
         var session = sessions[sessionId] ?? createSession(
             from: event,
@@ -382,6 +402,7 @@ actor SessionStore {
             case .remove:
                 sessions.removeValue(forKey: sessionId)
                 cancelPendingSync(sessionId: sessionId)
+                recordRemovedSessionBoundary(sessionId, at: observedAt)
                 await cleanupExternalLifecycle(sessionId: sessionId, completedAt: observedAt)
                 Self.logger.info(
                     "Hook lifecycle \(transition.reason.rawValue, privacy: .public) for \(sessionId.prefix(8), privacy: .public)"
@@ -605,6 +626,23 @@ actor SessionStore {
             lastActivity: observedAt,
             createdAt: observedAt
         )
+    }
+
+    private func recordRemovedSessionBoundary(_ sessionId: String, at date: Date) {
+        removedSessionBoundaries[sessionId] = max(
+            removedSessionBoundaries[sessionId] ?? .distantPast,
+            date
+        )
+        guard removedSessionBoundaries.count > Self.removedSessionBoundaryCapacity else {
+            return
+        }
+        let overflow = removedSessionBoundaries.count -
+            Self.removedSessionBoundaryCapacity
+        for (sessionId, _) in removedSessionBoundaries.sorted(by: {
+            $0.value < $1.value
+        }).prefix(overflow) {
+            removedSessionBoundaries.removeValue(forKey: sessionId)
+        }
     }
 
     private func registerPendingInteraction(

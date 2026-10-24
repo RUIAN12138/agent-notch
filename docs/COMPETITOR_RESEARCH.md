@@ -230,3 +230,11 @@ Vibe Island `1.0.51` 官方更新日志提到修复旧 transcript/上一轮时�
 Agent Notch 自身状态裁决中发现相邻风险：Codex 的未匹配工具调用原本能恢复超时误判的长任务，但若它在真实完成后因不完整/延迟快照再次出现，也会被当作新工作状态，直接越过 `completedAt`。现将“超时合成的完成边界”单独标记并写入会话快照：真实完成不能被完成前启动的旧工具调用复活；超时边界仍可由持久未匹配工具调用恢复；若后续读到该回合的真实完成记录，则把边界升级为已确认完成。旧版快照缺少该字段时，以 `completedAt > lastActivity` 兼容识别超时边界。
 
 新增 `LifecycleReducerTests` 与 `SessionStoreColdStartTests` 覆盖真实完成拒绝旧工具恢复、超时后恢复长工具、迟到真实完成确认超时边界，以及旧版快照兼容逻辑。完整 macOS XCTest 为 436 passed、0 failed、0 skipped；Xcode 仍报告 `ProcessExecutorTests.swift` 的 QoS priority-inversion runtime warning。该结论来自 Agent Notch 源码/自动化测试，不是 Codex 或竞品真实运行回合验收。
+
+### 被移除会话的迟到 Hook 隔离（2026-10-24）
+
+Vibe Island `1.0.55` 更新说明称根回合完成后，仍运行的后台子 Agent 不应让根卡片重新进入 Working；这是官方发布说明，不是本机运行观察或其内部实现证据。[官方更新记录](https://vibeisland.app/changelog/)。这提醒我们继续检查“终止后旧事件迟到”的其他边界。
+
+Agent Notch 接受 `SessionEnd` / `SessionExpired` 后会删除会话及其生命周期游标。此前若旧队列中的 `PreToolUse` 或 `UserPromptSubmit` 在之后才到达，就可能因游标已删除而重新创建 Working 会话。现在保留最多 512 个最近的会话移除时间戳墓碑；墓碑存在期间，只接受时间戳严格晚于移除边界的 `SessionStart` / `UserPromptSubmit` 作为新根代际，其他事件不会重建会话。墓碑仅驻留内存，并非跨应用重启的持久化去重协议；缺失或错误的 Agent 时间戳仍需要各来源适配器和真实 Hook 验收。
+
+新增 `SessionStoreLifecycleTests.testRemovedSessionRejectsLateActivityButAllowsLaterRootStart` 覆盖 SessionEnd 后旧工具事件和旧提示事件被拒绝，以及更晚的新提示能恢复同一会话。定向 XCTest 为 1 passed；完整 macOS XCTest 为 437 passed、0 failed、0 skipped。Xcode 仍报告 `ProcessExecutorTests.swift` 的 QoS priority-inversion runtime warning。这些是本地状态逻辑自动化证据，不等于真实 Agent 事件队列、真实 Hook 调度或已安装 UI 验收。

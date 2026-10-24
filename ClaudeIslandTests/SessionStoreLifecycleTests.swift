@@ -413,6 +413,66 @@ final class SessionStoreLifecycleTests: XCTestCase {
         XCTAssertNil(removedSession)
     }
 
+    func testRemovedSessionRejectsLateActivityButAllowsLaterRootStart() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "removed-session-late-hook-\(UUID().uuidString)"
+        let startedAt = Date()
+        let endedAt = startedAt.addingTimeInterval(1)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: startedAt,
+            source: "claude"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SessionEnd",
+            status: "ended",
+            observedAt: endedAt,
+            source: "claude"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PreToolUse",
+            status: "processing",
+            observedAt: endedAt.addingTimeInterval(-0.25),
+            tool: "Bash",
+            toolUseId: "late-tool",
+            source: "claude"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: endedAt.addingTimeInterval(-0.1),
+            source: "claude"
+        )))
+
+        let removedSession = await store.session(for: sessionId)
+        XCTAssertNil(removedSession)
+
+        let resumedAt = endedAt.addingTimeInterval(1)
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: resumedAt,
+            source: "claude"
+        )))
+
+        let storedResumedSession = await store.session(for: sessionId)
+        let resumedSession = try XCTUnwrap(storedResumedSession)
+        XCTAssertEqual(resumedSession.phase, .processing)
+        XCTAssertNil(resumedSession.completedAt)
+        XCTAssertFalse(resumedSession.chatItems.contains { $0.id == "late-tool" })
+    }
+
     func testStaleSessionEndCannotRemoveResumedSession() async throws {
         let store = SessionStore(
             persistenceEnabled: false,
