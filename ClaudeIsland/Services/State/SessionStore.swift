@@ -49,6 +49,14 @@ actor SessionStore {
         let toolTerminalBoundaryAt: TimeInterval?
     }
 
+    /// Durable ordering boundary for sessions explicitly removed by an Agent
+    /// lifecycle hook. Stored separately so legacy active-session arrays stay
+    /// readable without dropping the boundary on app restart.
+    private struct PersistedRemovedSessionBoundary: Codable {
+        let sessionId: String
+        let removedAt: TimeInterval
+    }
+
     /// Latest privacy-minimized lifecycle observation written by the bridge.
     /// This is separate from `PersistedSession`: the bridge keeps updating it
     /// while Agent Notch is not running, which closes the mid-turn launch gap.
@@ -90,6 +98,11 @@ actor SessionStore {
     private var removedSessionBoundaries: [String: Date] = [:]
     private static let removedSessionBoundaryCapacity = 512
 
+    private var removedSessionBoundariesURL: URL {
+        persistenceURL.deletingLastPathComponent()
+            .appendingPathComponent("removed-session-boundaries.json")
+    }
+
     /// Bounded, privacy-minimized reasons behind native lifecycle decisions.
     /// This remains in memory until a future diagnostics UI exposes it.
     private var lifecycleTraceEntries: [(
@@ -123,6 +136,8 @@ actor SessionStore {
     private let bridgeSnapshotMaximumAge: TimeInterval = 24 * 60 * 60
 
     private static let bridgeSnapshotMaximumBytes: UInt64 = 64 * 1024
+    private static let removedSessionBoundaryMaximumBytes: UInt64 = 1024 * 1024
+    private static let removedSessionBoundaryMaximumIDLength = 256
 
     /// Restoration is deliberately deferred until monitoring starts, so the
     /// actor is fully initialized before any filesystem or process inspection.
@@ -318,17 +333,13 @@ actor SessionStore {
         }
 
         if let removedAt = removedSessionBoundaries[sessionId] {
-            let isFreshRootStart = event.event == "SessionStart" ||
-                event.event == "UserPromptSubmit"
-            guard isFreshRootStart, observedAt > removedAt else {
+            guard Self.canResumeRemovedSession(from: event),
+                  observedAt > removedAt else {
                 Self.logger.info(
                     "Ignoring hook after removed session boundary for \(sessionId.prefix(8), privacy: .public)"
                 )
                 return
             }
-            // A later root start is a legitimate new generation, including a
-            // resumed CLI that reuses its session ID.
-            removedSessionBoundaries.removeValue(forKey: sessionId)
         }
 
         let isNewSession = !sessions.keys.contains(sessionId)
@@ -413,6 +424,11 @@ actor SessionStore {
             }
 
             if shouldApplyLifecycle {
+                // Only clear the durable removal boundary once the source has
+                // actually supplied a fresh lifecycle transition. A newer
+                // PreToolUse is valid mid-turn evidence when the app starts
+                // after the preceding UserPromptSubmit.
+                removedSessionBoundaries.removeValue(forKey: sessionId)
                 Self.logger.debug(
                     "Hook lifecycle \(transition.reason.rawValue, privacy: .public) for \(sessionId.prefix(8), privacy: .public)"
                 )
@@ -628,6 +644,18 @@ actor SessionStore {
         )
     }
 
+    private nonisolated static func canResumeRemovedSession(
+        from event: HookEvent
+    ) -> Bool {
+        switch event.event {
+        case "SessionStart", "UserPromptSubmit", "PreToolUse",
+             "PermissionRequest", "PreCompact":
+            return true
+        default:
+            return false
+        }
+    }
+
     private func recordRemovedSessionBoundary(_ sessionId: String, at date: Date) {
         removedSessionBoundaries[sessionId] = max(
             removedSessionBoundaries[sessionId] ?? .distantPast,
@@ -643,6 +671,7 @@ actor SessionStore {
         }).prefix(overflow) {
             removedSessionBoundaries.removeValue(forKey: sessionId)
         }
+        persistRemovedSessionBoundaries()
     }
 
     private func registerPendingInteraction(
@@ -2619,6 +2648,7 @@ actor SessionStore {
         }
 
         let url = persistenceURL
+        var didPersistActiveSnapshot = false
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
@@ -2636,11 +2666,102 @@ actor SessionStore {
                 [.posixPermissions: 0o600],
                 ofItemAtPath: url.path
             )
+            didPersistActiveSnapshot = true
         } catch {
             Self.logger.error(
                 "Failed to persist active sessions: \(error.localizedDescription, privacy: .public)"
             )
         }
+        // Write the ordinary snapshot before clearing any removal marker. If
+        // the process exits between the two atomic writes, the old marker
+        // still prevents the previous session row from being restored.
+        if didPersistActiveSnapshot {
+            persistRemovedSessionBoundaries()
+        }
+    }
+
+    private func persistRemovedSessionBoundaries() {
+        guard persistenceEnabled else { return }
+        let url = removedSessionBoundariesURL
+        let entries: [PersistedRemovedSessionBoundary] =
+            removedSessionBoundaries.compactMap { element in
+                let (sessionId, date) = element
+                guard sessionId.utf8.count <=
+                    Self.removedSessionBoundaryMaximumIDLength else {
+                    return nil
+                }
+                return PersistedRemovedSessionBoundary(
+                    sessionId: sessionId,
+                    removedAt: date.timeIntervalSince1970
+                )
+            }.sorted {
+                $0.removedAt < $1.removedAt
+            }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: url.deletingLastPathComponent().path
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(entries)
+            guard UInt64(data.count) <= Self.removedSessionBoundaryMaximumBytes else {
+                Self.logger.error("Removed session boundary snapshot exceeds size limit")
+                return
+            }
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: url.path
+            )
+        } catch {
+            Self.logger.error(
+                "Failed to persist removed session boundaries: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    private func restoreRemovedSessionBoundaries() {
+        guard persistenceEnabled else { return }
+        let url = removedSessionBoundariesURL
+        let resourceKeys: Set<URLResourceKey> = [.fileSizeKey]
+        guard Self.isOwnedRegularFile(url),
+              let values = try? url.resourceValues(forKeys: resourceKeys),
+              let byteCount = values.fileSize,
+              byteCount > 0,
+              UInt64(byteCount) <= Self.removedSessionBoundaryMaximumBytes,
+              let data = try? Data(contentsOf: url) else {
+            return
+        }
+        guard let persisted = try? JSONDecoder().decode(
+            [PersistedRemovedSessionBoundary].self,
+            from: data
+        ) else {
+            Self.logger.warning("Ignoring unreadable removed-session boundary snapshot")
+            return
+        }
+
+        var restored: [String: Date] = [:]
+        for item in persisted where !item.sessionId.isEmpty &&
+            item.sessionId.utf8.count <= Self.removedSessionBoundaryMaximumIDLength &&
+            item.removedAt.isFinite {
+            let date = Date(timeIntervalSince1970: item.removedAt)
+            restored[item.sessionId] = max(
+                restored[item.sessionId] ?? .distantPast,
+                date
+            )
+        }
+        removedSessionBoundaries = Dictionary(
+            restored.sorted { $0.value > $1.value }
+                .prefix(Self.removedSessionBoundaryCapacity)
+                .map { ($0.key, $0.value) },
+            uniquingKeysWith: { first, _ in first }
+        )
     }
 
     /// Restore cards only when their original process is still alive. A
@@ -2648,6 +2769,7 @@ actor SessionStore {
     /// only processing/compacting phases are retained; interaction sockets
     /// cannot be restored. JSONL reconciliation owns the subsequent phase.
     private func restorePersistedSessions() async {
+        restoreRemovedSessionBoundaries()
         let url = persistenceURL
         guard let data = try? Data(contentsOf: url) else {
             return
@@ -2700,6 +2822,18 @@ actor SessionStore {
                 cwd: item.cwd,
                 projectName: item.projectName
             ) {
+                continue
+            }
+
+            let persistedEvidenceAt = max(
+                item.lastActivity,
+                max(
+                    item.lastHookEventAt ?? .distantPast,
+                    item.lastCodexTurnStartedAt ?? .distantPast
+                )
+            )
+            if let removedAt = removedSessionBoundaries[item.sessionId],
+               persistedEvidenceAt <= removedAt {
                 continue
             }
 
@@ -2881,6 +3015,10 @@ actor SessionStore {
                current.lastActivity >= item.lastActivity {
                 continue
             }
+            if let removedAt = removedSessionBoundaries[item.sessionId],
+               persistedEvidenceAt > removedAt {
+                removedSessionBoundaries.removeValue(forKey: item.sessionId)
+            }
             sessions[item.sessionId] = session
             if restoredPhase.isActive || restoredPhase.isWaitingForApproval {
                 restoredActiveSessions.append((item.sessionId, item.cwd))
@@ -2958,6 +3096,10 @@ actor SessionStore {
                   age <= bridgeSnapshotMaximumAge else {
                 continue
             }
+            if let removedAt = removedSessionBoundaries[snapshot.sessionId],
+               observedAt <= removedAt {
+                continue
+            }
 
             let source = AgentSource(hookValue: snapshot.source)
             let projectName = URL(
@@ -2993,6 +3135,11 @@ actor SessionStore {
                current.lastActivity >= observedAt {
                 continue
             }
+
+            // The snapshot contains the latest event, not the full event
+            // sequence. A timestamp-newer PreToolUse can therefore be the
+            // valid first evidence available when restoring mid-turn.
+            removedSessionBoundaries.removeValue(forKey: snapshot.sessionId)
 
             let restoredPhase: SessionPhase = snapshot.status == "compacting"
                 ? .compacting

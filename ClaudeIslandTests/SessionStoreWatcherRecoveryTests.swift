@@ -155,13 +155,16 @@ final class SessionStoreWatcherRecoveryTests: XCTestCase {
         }
 
         func writeBridgeSession(
-            subagentAgents: [String: Any]? = nil
+            subagentAgents: [String: Any]? = nil,
+            observedAt: Date? = nil,
+            event: String = "PreToolUse",
+            status: String = "running_tool"
         ) throws {
             var payload: [String: Any] = [
                 "version": 1, "session_id": id, "cwd": root.path,
-                "source": "claude", "event": "PreToolUse", "status": "running_tool",
+                "source": "claude", "event": event, "status": status,
                 "pid": ProcessInfo.processInfo.processIdentifier,
-                "observed_at": observedAt.timeIntervalSince1970
+                "observed_at": (observedAt ?? self.observedAt).timeIntervalSince1970
             ]
             if let subagentAgents {
                 payload["subagent_agents"] = subagentAgents
@@ -295,6 +298,75 @@ final class SessionStoreWatcherRecoveryTests: XCTestCase {
             fixture.observedAt.addingTimeInterval(-1).timeIntervalSince1970
         )
         await store.process(.sessionEnded(sessionId: fixture.id))
+    }
+
+    func testRemovedSessionBoundarySurvivesRestartWithoutBlockingNewMidToolRestore() async throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let startAt = fixture.observedAt
+        let endedAt = startAt.addingTimeInterval(1)
+        let initialStore = fixture.store(watcher: RecoveryWatcher())
+
+        await initialStore.process(.hookReceived(HookEvent(
+            sessionId: fixture.id, cwd: fixture.root.path,
+            event: "UserPromptSubmit", status: "processing",
+            observedAt: startAt.timeIntervalSince1970, source: "claude",
+            pid: nil, tty: nil, tool: nil, toolInput: nil,
+            toolUseId: nil, notificationType: nil, message: nil
+        )))
+        await initialStore.process(.hookReceived(HookEvent(
+            sessionId: fixture.id, cwd: fixture.root.path,
+            event: "SessionEnd", status: "ended",
+            observedAt: endedAt.timeIntervalSince1970, source: "claude",
+            pid: nil, tty: nil, tool: nil, toolInput: nil,
+            toolUseId: nil, notificationType: nil, message: nil
+        )))
+        let removed = await initialStore.session(for: fixture.id)
+        XCTAssertNil(removed)
+
+        // Simulate a crash between the durable removal marker and rewriting
+        // the ordinary active-session snapshot: the previous active row is
+        // still on disk, and the offline bridge file contains an older event.
+        let persistedTimestamp = ISO8601DateFormatter().string(from: startAt)
+        try fixture.writeJSON([[
+            "sessionId": fixture.id, "cwd": fixture.root.path,
+            "projectName": "recovery-fixture", "source": "claude",
+            "pid": ProcessInfo.processInfo.processIdentifier,
+            "phase": "processing", "lastActivity": persistedTimestamp,
+            "createdAt": persistedTimestamp,
+            "lastHookEventAt": persistedTimestamp
+        ]], to: fixture.snapshot)
+        try fixture.writeTranscript(completed: false)
+        try fixture.writeBridgeSession(observedAt: endedAt.addingTimeInterval(-0.1))
+
+        let staleWatcher = RecoveryWatcher()
+        let staleStore = fixture.store(watcher: staleWatcher)
+        await staleStore.startPeriodicStatusCheck()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let staleRestore = await staleStore.session(for: fixture.id)
+        await staleStore.stopPeriodicStatusCheck()
+        XCTAssertNil(staleRestore)
+        XCTAssertTrue(staleWatcher.watching.isEmpty)
+
+        // A newer PreToolUse snapshot is a real mid-turn observation even
+        // without the earlier UserPromptSubmit being the latest disk row.
+        try fixture.writeBridgeSession(
+            observedAt: endedAt.addingTimeInterval(2),
+            event: "PreToolUse",
+            status: "running_tool"
+        )
+        let resumedWatcher = RecoveryWatcher()
+        let resumedStore = fixture.store(watcher: resumedWatcher)
+        await resumedStore.startPeriodicStatusCheck()
+        let resumed = try await waitForRestore(
+            resumedStore, id: fixture.id, watcher: resumedWatcher
+        )
+        await resumedStore.stopPeriodicStatusCheck()
+
+        XCTAssertEqual(resumed.phase, .processing)
+        XCTAssertEqual(resumed.source, .claude)
+        XCTAssertTrue(resumedWatcher.watching.contains(fixture.id))
+        await resumedStore.process(.sessionEnded(sessionId: fixture.id))
     }
 
     func testTranscriptCompletionOverridesWorkingSnapshotWithoutStartingWatcher() async throws {
