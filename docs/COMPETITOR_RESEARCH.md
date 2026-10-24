@@ -222,3 +222,11 @@ Vibe Island 官方 `1.0.55` 更新记录称，根会话回复后仍在运行的�
 Agent Notch 的精确 ID 配对虽然能区分并行 Agent，却仍有一个跨代际边界：旧根回合的 Agent 若在下一轮开始后才结束，它的 Stop 时间落在新根回合内，旧逻辑会把它计作新一轮完成提醒。新增回归测试先复现了该误报（旧 Agent Stop 增加完成代次），随后改为只让当前根回合内启动的活动 Agent 参与单体/全部完成提醒判断；旧 Agent 仍可被清理，但不会冒充新回合活动。当前根代际由已保存的 Hook 时间戳确定，无需改变快照 schema，也保留没有根时间戳时的中途启动兼容行为。
 
 `SubagentCompletionAttentionTests` 定向套件为 17 passed、0 failed；新用例覆盖旧 Agent 晚结束时新一轮仍有 Agent 活动，以及旧 Agent 是新一轮唯一尚未结束的 Agent 两种时序。完整 macOS XCTest 为 433 passed、0 failed、0 skipped；另有 `ProcessExecutorTests.swift` 的 QoS 优先级反转运行时警告。结果是本地状态逻辑回归证据，不证明真实 Claude Hook 调度或安装后 UI 表现。
+
+### Codex 旧工具记录不能越过真实完成边界（2026-10-24）
+
+Vibe Island `1.0.51` 官方更新日志提到修复旧 transcript/上一轮时间戳把长任务误判为 Ready；这仅是上游行为说明，不证明它的内部实现。[官方更新日志](https://vibeisland.app/changelog/)
+
+Agent Notch 自身状态裁决中发现相邻风险：Codex 的未匹配工具调用原本能恢复超时误判的长任务，但若它在真实完成后因不完整/延迟快照再次出现，也会被当作新工作状态，直接越过 `completedAt`。现将“超时合成的完成边界”单独标记并写入会话快照：真实完成不能被完成前启动的旧工具调用复活；超时边界仍可由持久未匹配工具调用恢复；若后续读到该回合的真实完成记录，则把边界升级为已确认完成。旧版快照缺少该字段时，以 `completedAt > lastActivity` 兼容识别超时边界。
+
+新增 `LifecycleReducerTests` 与 `SessionStoreColdStartTests` 覆盖真实完成拒绝旧工具恢复、超时后恢复长工具、迟到真实完成确认超时边界，以及旧版快照兼容逻辑。完整 macOS XCTest 为 436 passed、0 failed、0 skipped；Xcode 仍报告 `ProcessExecutorTests.swift` 的 QoS priority-inversion runtime warning。该结论来自 Agent Notch 源码/自动化测试，不是 Codex 或竞品真实运行回合验收。

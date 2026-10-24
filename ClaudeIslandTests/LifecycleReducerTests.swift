@@ -38,7 +38,8 @@ final class LifecycleReducerTests: XCTestCase {
         lastHookEventAt: Date? = nil,
         turnStartedAt: Date? = nil,
         codexToolExecutionStartedAt: Date? = nil,
-        completedAt: Date? = nil
+        completedAt: Date? = nil,
+        completionWasStaleTimeout: Bool = false
     ) -> SessionLifecycleSnapshot {
         SessionLifecycleSnapshot(
             source: .codex,
@@ -48,7 +49,8 @@ final class LifecycleReducerTests: XCTestCase {
             lastHookEventAt: lastHookEventAt,
             turnStartedAt: turnStartedAt,
             codexToolExecutionStartedAt: codexToolExecutionStartedAt,
-            completedAt: completedAt
+            completedAt: completedAt,
+            completionWasStaleTimeout: completionWasStaleTimeout
         )
     }
 
@@ -189,12 +191,24 @@ final class LifecycleReducerTests: XCTestCase {
         let toolStartedAt = Date(timeIntervalSince1970: 30_000)
         let staleCompletionAt = toolStartedAt.addingTimeInterval(10 * 60)
         let resumedAt = toolStartedAt.addingTimeInterval(20 * 60)
-        let current = snapshot(
-            phase: .waitingForInput,
-            lastActivity: staleCompletionAt,
-            turnStartedAt: toolStartedAt.addingTimeInterval(-30),
-            completedAt: staleCompletionAt
+        let staleTimeout = reduce(
+            current: snapshot(
+                lastActivity: toolStartedAt,
+                turnStartedAt: toolStartedAt.addingTimeInterval(-30)
+            ),
+            observation: observation(
+                .active(
+                    turnStartedAt: toolStartedAt.addingTimeInterval(-30),
+                    lastEvidenceAt: toolStartedAt
+                ),
+                observedAt: toolStartedAt,
+                receivedAt: staleCompletionAt
+            )
         )
+        XCTAssertEqual(staleTimeout.reason, .staleActiveTimedOut)
+        let current = try XCTUnwrap(staleTimeout.nextSnapshot)
+        XCTAssertEqual(current.completedAt, staleCompletionAt)
+        XCTAssertTrue(current.completionWasStaleTimeout)
 
         let resumed = reduce(
             current: current,
@@ -215,7 +229,88 @@ final class LifecycleReducerTests: XCTestCase {
         }
         XCTAssertEqual(next.phase, .processing)
         XCTAssertNil(next.completedAt)
+        XCTAssertFalse(next.completionWasStaleTimeout)
         XCTAssertEqual(next.codexToolExecutionStartedAt, toolStartedAt)
+    }
+
+    func testPriorUnmatchedToolCannotReopenAuthoritativelyCompletedTurn() throws {
+        let turnStartedAt = Date(timeIntervalSince1970: 31_000)
+        let toolStartedAt = turnStartedAt.addingTimeInterval(2)
+        let completedAt = toolStartedAt.addingTimeInterval(8)
+        let completed = reduce(
+            current: snapshot(
+                lastActivity: turnStartedAt,
+                turnStartedAt: turnStartedAt
+            ),
+            observation: observation(
+                .completed(completedAt),
+                observedAt: completedAt,
+                receivedAt: completedAt
+            )
+        )
+        let current = try XCTUnwrap(completed.nextSnapshot)
+
+        let delayedToolSnapshot = reduce(
+            current: current,
+            observation: observation(
+                .activeTool(
+                    turnStartedAt: turnStartedAt,
+                    lastEvidenceAt: completedAt.addingTimeInterval(1),
+                    toolStartedAt: toolStartedAt
+                ),
+                observedAt: completedAt.addingTimeInterval(1),
+                receivedAt: completedAt.addingTimeInterval(2)
+            )
+        )
+
+        XCTAssertEqual(delayedToolSnapshot.reason, .activeWithoutNewGeneration)
+        XCTAssertEqual(delayedToolSnapshot.mutation, .none)
+        XCTAssertFalse(current.completionWasStaleTimeout)
+    }
+
+    func testNativeCompletionPromotesEarlierStaleTimeoutToConfirmedBoundary() throws {
+        let turnStartedAt = Date(timeIntervalSince1970: 32_000)
+        let staleAt = turnStartedAt.addingTimeInterval(10 * 60)
+        let actualCompletionAt = turnStartedAt.addingTimeInterval(5 * 60)
+        let timedOut = reduce(
+            current: snapshot(lastActivity: turnStartedAt, turnStartedAt: turnStartedAt),
+            observation: observation(
+                .active(
+                    turnStartedAt: turnStartedAt,
+                    lastEvidenceAt: turnStartedAt
+                ),
+                observedAt: turnStartedAt,
+                receivedAt: staleAt
+            )
+        )
+        let staleSnapshot = try XCTUnwrap(timedOut.nextSnapshot)
+
+        let confirmed = reduce(
+            current: staleSnapshot,
+            observation: observation(
+                .completed(actualCompletionAt),
+                observedAt: actualCompletionAt,
+                receivedAt: staleAt.addingTimeInterval(1)
+            )
+        )
+
+        XCTAssertEqual(confirmed.reason, .nativeCompletion)
+        XCTAssertFalse(try XCTUnwrap(confirmed.nextSnapshot).completionWasStaleTimeout)
+
+        let delayedTool = reduce(
+            current: try XCTUnwrap(confirmed.nextSnapshot),
+            observation: observation(
+                .activeTool(
+                    turnStartedAt: turnStartedAt,
+                    lastEvidenceAt: actualCompletionAt.addingTimeInterval(1),
+                    toolStartedAt: turnStartedAt.addingTimeInterval(1)
+                ),
+                observedAt: actualCompletionAt.addingTimeInterval(1),
+                receivedAt: staleAt.addingTimeInterval(2)
+            )
+        )
+        XCTAssertEqual(delayedTool.reason, .activeWithoutNewGeneration)
+        XCTAssertEqual(delayedTool.mutation, .none)
     }
 
     func testStaleDiscoveryCannotCreatePhantomWorkingCard() {
@@ -343,6 +438,7 @@ final class LifecycleReducerTests: XCTestCase {
         XCTAssertEqual(next.phase, .waitingForInput)
         XCTAssertEqual(next.completedAt, completedAt)
         XCTAssertEqual(next.lastActivity, completedAt)
+        XCTAssertFalse(next.completionWasStaleTimeout)
     }
 
     func testPendingInteractionKeepsPriorityWhileActivityMetadataAdvances() throws {
@@ -403,6 +499,7 @@ final class LifecycleReducerTests: XCTestCase {
         }
         XCTAssertEqual(staleNext.phase, .waitingForInput)
         XCTAssertEqual(staleNext.completedAt, now)
+        XCTAssertTrue(staleNext.completionWasStaleTimeout)
 
         let unknown = reduce(
             current: current,
@@ -418,6 +515,7 @@ final class LifecycleReducerTests: XCTestCase {
         }
         XCTAssertEqual(unknownNext.phase, .waitingForInput)
         XCTAssertEqual(unknownNext.completedAt, now)
+        XCTAssertTrue(unknownNext.completionWasStaleTimeout)
     }
 
     func testMissingSourceHonorsGraceBeforeRemoval() {

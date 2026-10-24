@@ -39,6 +39,7 @@ actor SessionStore {
         let lastHookEventAt: Date?
         let lastCodexTurnStartedAt: Date?
         let completedAt: Date?
+        let completionWasStaleTimeout: Bool?
         let subagentAgents: [String: SubagentHookAgentState]?
         let subagentTurnHadAgents: Bool?
         let subagentTurnStartedAt: TimeInterval?
@@ -2567,6 +2568,7 @@ actor SessionStore {
                 lastHookEventAt: session.lastHookEventAt,
                 lastCodexTurnStartedAt: session.lastCodexTurnStartedAt,
                 completedAt: session.completedAt,
+                completionWasStaleTimeout: session.completionWasStaleTimeout,
                 subagentAgents: session.subagentHookState.agents,
                 subagentTurnHadAgents:
                     session.subagentHookState.hasAgentActivityInCurrentTurn,
@@ -2738,6 +2740,14 @@ actor SessionStore {
             let lifecycleStartsNewerTurn: Bool
             let activeTurnStartedAt: Date?
             let activeToolStartedAt: Date?
+            let completionWasStaleTimeout: Bool
+            switch codexLifecycle {
+            case .completed, .interrupted, .failed:
+                completionWasStaleTimeout = false
+            case .active, .activeTool, .missing, .unknown:
+                completionWasStaleTimeout = item.completionWasStaleTimeout ??
+                    (item.completedAt.map { $0 > item.lastActivity } ?? false)
+            }
             switch codexLifecycle {
             case .active(let turnStartedAt, _):
                 activeTurnStartedAt = turnStartedAt
@@ -2748,9 +2758,14 @@ actor SessionStore {
             case .activeTool(let turnStartedAt, _, let toolStartedAt):
                 activeTurnStartedAt = turnStartedAt
                 activeToolStartedAt = toolStartedAt
-                lifecycleStartsNewerTurn = item.lastHookEventAt.map {
+                let hasNewerGeneration = item.completedAt.map { completedAt in
+                    (turnStartedAt.map { $0 > completedAt } ?? false) ||
+                        toolStartedAt > completedAt || completionWasStaleTimeout
+                } ?? true
+                let isAfterLatestHook = item.lastHookEventAt.map {
                     toolStartedAt > $0
                 } ?? true
+                lifecycleStartsNewerTurn = hasNewerGeneration && isAfterLatestHook
             case .completed, .interrupted, .failed, .missing, .unknown:
                 activeTurnStartedAt = nil
                 activeToolStartedAt = nil
@@ -2809,6 +2824,9 @@ actor SessionStore {
                 completedAt: lifecycleStartsNewerTurn
                     ? nil
                     : lifecycleCompletion,
+                completionWasStaleTimeout: lifecycleStartsNewerTurn
+                    ? false
+                    : completionWasStaleTimeout,
                 subagentHookState: SubagentHookState(
                     agents: item.subagentAgents ?? [:],
                     hasAgentActivityInCurrentTurn:

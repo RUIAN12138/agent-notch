@@ -83,6 +83,10 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// A newly launched session that is merely waiting for its first prompt is
     /// not considered completed.
     var completedAt: Date?
+    /// True when `completedAt` is a synthetic boundary produced by a stale
+    /// activity timeout rather than an authoritative completion signal.
+    /// A later durable Codex tool call may reopen only this kind of boundary.
+    var completionWasStaleTimeout: Bool
 
     /// Latest accepted Claude SubagentStop event. The generation is an
     /// in-memory event cursor so SwiftUI can observe a Hook transition even
@@ -130,6 +134,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         lastCodexTurnStartedAt: Date? = nil,
         codexToolExecutionStartedAt: Date? = nil,
         completedAt: Date? = nil,
+        completionWasStaleTimeout: Bool = false,
         subagentCompletionGeneration: UInt64 = 0,
         lastSubagentCompletedAt: Date? = nil,
         subagentHookState: SubagentHookState = SubagentHookState(),
@@ -158,6 +163,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.lastCodexTurnStartedAt = lastCodexTurnStartedAt
         self.codexToolExecutionStartedAt = codexToolExecutionStartedAt
         self.completedAt = completedAt
+        self.completionWasStaleTimeout = completionWasStaleTimeout
         self.subagentCompletionGeneration = subagentCompletionGeneration
         self.lastSubagentCompletedAt = lastSubagentCompletedAt
         self.subagentHookState = subagentHookState

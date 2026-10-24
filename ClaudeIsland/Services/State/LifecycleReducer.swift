@@ -165,6 +165,7 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
     var turnStartedAt: Date?
     var codexToolExecutionStartedAt: Date?
     var completedAt: Date?
+    var completionWasStaleTimeout: Bool
 
     init(
         source: AgentSource,
@@ -174,7 +175,8 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
         lastHookEventAt: Date? = nil,
         turnStartedAt: Date? = nil,
         codexToolExecutionStartedAt: Date? = nil,
-        completedAt: Date? = nil
+        completedAt: Date? = nil,
+        completionWasStaleTimeout: Bool = false
     ) {
         self.source = source
         self.phase = phase
@@ -184,6 +186,7 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
         self.turnStartedAt = turnStartedAt
         self.codexToolExecutionStartedAt = codexToolExecutionStartedAt
         self.completedAt = completedAt
+        self.completionWasStaleTimeout = completionWasStaleTimeout
     }
 
     init(session: SessionState) {
@@ -196,7 +199,8 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
             turnStartedAt: session.lastCodexTurnStartedAt,
             codexToolExecutionStartedAt:
                 session.codexToolExecutionStartedAt,
-            completedAt: session.completedAt
+            completedAt: session.completedAt,
+            completionWasStaleTimeout: session.completionWasStaleTimeout
         )
     }
 
@@ -209,6 +213,7 @@ nonisolated struct SessionLifecycleSnapshot: Equatable, Sendable {
         session.lastCodexTurnStartedAt = turnStartedAt
         session.codexToolExecutionStartedAt = codexToolExecutionStartedAt
         session.completedAt = completedAt
+        session.completionWasStaleTimeout = completionWasStaleTimeout
     }
 }
 
@@ -590,6 +595,7 @@ nonisolated enum LifecycleReducer {
             }
             next.phase = .waitingForInput
             next.completedAt = observation.receivedAt
+            next.completionWasStaleTimeout = true
             next.codexToolExecutionStartedAt = nil
             return LifecycleTransition(
                 mutation: .update(next),
@@ -601,11 +607,15 @@ nonisolated enum LifecycleReducer {
             let startsNewGeneration = turnStartedAt.map {
                 $0 > completedAt
             } ?? false
-            // A durable unmatched tool call is stronger than a stale timeout:
-            // the native rollout has no completion boundary after that call.
-            // The hook-order guard above still prevents it from crossing an
-            // authoritative newer hook.
-            guard startsNewGeneration || toolStartedAt != nil else {
+            let startsAfterNativeCompletion = toolStartedAt.map {
+                $0 > completedAt
+            } ?? false
+            // A durable unmatched call can recover a synthetic stale timeout,
+            // but cannot cross an authoritative completion boundary. The
+            // hook-order guard above continues to reject observations older
+            // than the latest Hook event.
+            guard startsNewGeneration || startsAfterNativeCompletion ||
+                    (next.completionWasStaleTimeout && toolStartedAt != nil) else {
                 return LifecycleTransition(
                     mutation: .none,
                     reason: .activeWithoutNewGeneration
@@ -628,6 +638,7 @@ nonisolated enum LifecycleReducer {
         }
         if !interactionHasPriority {
             next.completedAt = nil
+            next.completionWasStaleTimeout = false
         }
 
         guard next != previous else {
@@ -696,6 +707,27 @@ nonisolated enum LifecycleReducer {
                 reason: .completionOlderThanTurn
             )
         }
+        if next.phase == .waitingForInput, next.completedAt != nil {
+            guard next.completionWasStaleTimeout else {
+                return LifecycleTransition(
+                    mutation: .none,
+                    reason: .alreadyCurrent
+                )
+            }
+            if let lastHookEventAt = next.lastHookEventAt,
+               lastHookEventAt > completionEvidenceAt {
+                return LifecycleTransition(
+                    mutation: .none,
+                    reason: .completionOlderThanHook
+                )
+            }
+            next.completionWasStaleTimeout = false
+            next.lastActivity = max(next.lastActivity, completionEvidenceAt)
+            return LifecycleTransition(
+                mutation: .update(next),
+                reason: .nativeCompletion
+            )
+        }
         guard next.completedAt == nil || next.phase != .waitingForInput else {
             return LifecycleTransition(
                 mutation: .none,
@@ -705,6 +737,7 @@ nonisolated enum LifecycleReducer {
 
         next.phase = .waitingForInput
         next.completedAt = completionEvidenceAt
+        next.completionWasStaleTimeout = false
         next.lastActivity = max(next.lastActivity, completionEvidenceAt)
         next.codexToolExecutionStartedAt = nil
         return LifecycleTransition(
@@ -752,6 +785,7 @@ nonisolated enum LifecycleReducer {
             terminalAt
         )
         next.completedAt = nil
+        next.completionWasStaleTimeout = false
         next.codexToolExecutionStartedAt = nil
         guard next != previous else {
             return LifecycleTransition(
@@ -808,6 +842,7 @@ nonisolated enum LifecycleReducer {
             terminalAt
         )
         next.completedAt = nil
+        next.completionWasStaleTimeout = false
         next.codexToolExecutionStartedAt = nil
         guard next != previous else {
             return LifecycleTransition(
@@ -873,6 +908,7 @@ nonisolated enum LifecycleReducer {
 
         next.phase = .waitingForInput
         next.completedAt = observation.receivedAt
+        next.completionWasStaleTimeout = true
         next.codexToolExecutionStartedAt = nil
         return LifecycleTransition(
             mutation: .update(next),
@@ -994,6 +1030,7 @@ nonisolated enum LifecycleReducer {
                 observedAt
             )
             next.completedAt = nil
+            next.completionWasStaleTimeout = false
             next.codexToolExecutionStartedAt = nil
 
             if !interactionHasPriority {
@@ -1060,6 +1097,7 @@ nonisolated enum LifecycleReducer {
             // fresh hook evidence, not a new completion or retention deadline.
             // Active hooks clear completedAt when a new generation resumes.
             next.completedAt = next.completedAt ?? observedAt
+            next.completionWasStaleTimeout = false
             next.codexToolExecutionStartedAt = nil
             guard next != previous else {
                 return LifecycleTransition(
@@ -1102,6 +1140,7 @@ nonisolated enum LifecycleReducer {
                 next.completedAt ?? .distantPast,
                 observedAt
             )
+            next.completionWasStaleTimeout = false
             next.codexToolExecutionStartedAt = nil
             guard next != previous else {
                 return LifecycleTransition(
@@ -1171,6 +1210,7 @@ nonisolated enum LifecycleReducer {
             resolvedAt
         )
         next.completedAt = nil
+        next.completionWasStaleTimeout = false
         next.codexToolExecutionStartedAt = nil
 
         guard next != previous else {
@@ -1222,6 +1262,7 @@ nonisolated enum LifecycleReducer {
             observation.observedAt
         )
         next.completedAt = nil
+        next.completionWasStaleTimeout = false
         next.codexToolExecutionStartedAt = nil
         guard next != previous else {
             return LifecycleTransition(
@@ -1258,6 +1299,7 @@ nonisolated enum LifecycleReducer {
             next.completedAt ?? .distantPast,
             observation.observedAt
         )
+        next.completionWasStaleTimeout = false
         next.codexToolExecutionStartedAt = nil
         guard next != previous else {
             return LifecycleTransition(

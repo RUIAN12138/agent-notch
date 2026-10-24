@@ -54,6 +54,56 @@ final class SessionStoreColdStartTests: XCTestCase {
         )
     }
 
+    private func writeCodexRolloutWithUnmatchedTool(
+        root: URL,
+        sessionId: String,
+        cwd: String,
+        turnStartedAt: Date,
+        toolStartedAt: Date
+    ) throws {
+        let components = Calendar(identifier: .gregorian).dateComponents(
+            [.year, .month, .day],
+            from: Date()
+        )
+        let directory = root
+            .appendingPathComponent(String(format: "%04d", components.year!))
+            .appendingPathComponent(String(format: "%02d", components.month!))
+            .appendingPathComponent(String(format: "%02d", components.day!))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let rows: [[String: Any]] = [
+            [
+                "timestamp": formatter.string(from: turnStartedAt),
+                "type": "session_meta",
+                "payload": ["id": sessionId, "cwd": cwd]
+            ],
+            [
+                "timestamp": formatter.string(from: turnStartedAt),
+                "type": "event_msg",
+                "payload": ["type": "task_started"]
+            ],
+            [
+                "timestamp": formatter.string(from: toolStartedAt),
+                "type": "response_item",
+                "payload": [
+                    "type": "function_call",
+                    "call_id": "unmatched-\(sessionId)",
+                    "name": "exec_command",
+                    "arguments": "{}"
+                ]
+            ]
+        ]
+        let data = try rows.reduce(into: Data()) { result, row in
+            result.append(try JSONSerialization.data(withJSONObject: row))
+            result.append(0x0A)
+        }
+        try data.write(
+            to: directory.appendingPathComponent("rollout-test-\(sessionId).jsonl")
+        )
+    }
+
     func testAlreadyRunningCodexTurnIsDiscoveredBeforePeriodicDelay() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("agent-notch-cold-start-\(UUID().uuidString)")
@@ -214,5 +264,97 @@ final class SessionStoreColdStartTests: XCTestCase {
 
         XCTAssertEqual(restored?.phase, .failed)
         XCTAssertNil(restored?.completedAt)
+    }
+
+    func testColdStartDoesNotLetOldToolReopenRealCompletionButKeepsTimeoutRecovery() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-notch-completion-recovery-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let codexRoot = root.appendingPathComponent("codex", isDirectory: true)
+        let now = Date()
+        let confirmedID = "confirmed-\(UUID().uuidString)"
+        let timedOutID = "timed-out-\(UUID().uuidString)"
+        let confirmedAt = now.addingTimeInterval(-60)
+        let confirmedTurnStart = now.addingTimeInterval(-10 * 60)
+        let confirmedToolStart = now.addingTimeInterval(-9 * 60)
+        let timeoutBoundary = now.addingTimeInterval(-5 * 60)
+        let timeoutLastActivity = now.addingTimeInterval(-15 * 60)
+        let timeoutTurnStart = now.addingTimeInterval(-16 * 60)
+        let timeoutToolStart = now.addingTimeInterval(-10 * 60)
+
+        try writeCodexRolloutWithUnmatchedTool(
+            root: codexRoot,
+            sessionId: confirmedID,
+            cwd: root.path,
+            turnStartedAt: confirmedTurnStart,
+            toolStartedAt: confirmedToolStart
+        )
+        try writeCodexRolloutWithUnmatchedTool(
+            root: codexRoot,
+            sessionId: timedOutID,
+            cwd: root.path,
+            turnStartedAt: timeoutTurnStart,
+            toolStartedAt: timeoutToolStart
+        )
+
+        let formatter = ISO8601DateFormatter()
+        let persistenceURL = root.appendingPathComponent("active-sessions.json")
+        let persisted: [[String: Any]] = [
+            [
+                "sessionId": confirmedID,
+                "cwd": root.path,
+                "projectName": "confirmed-completion",
+                "source": "codex",
+                "phase": "waiting_for_input",
+                "lastActivity": formatter.string(from: confirmedAt),
+                "createdAt": formatter.string(from: confirmedTurnStart),
+                "lastCodexTurnStartedAt": formatter.string(from: confirmedTurnStart),
+                "completedAt": formatter.string(from: confirmedAt)
+            ],
+            [
+                "sessionId": timedOutID,
+                "cwd": root.path,
+                "projectName": "legacy-timeout",
+                "source": "codex",
+                "phase": "waiting_for_input",
+                "lastActivity": formatter.string(from: timeoutLastActivity),
+                "createdAt": formatter.string(from: timeoutTurnStart),
+                "lastCodexTurnStartedAt": formatter.string(from: timeoutTurnStart),
+                "completedAt": formatter.string(from: timeoutBoundary)
+            ]
+        ]
+        try JSONSerialization.data(withJSONObject: persisted).write(to: persistenceURL)
+
+        let store = SessionStore(
+            persistenceEnabled: true,
+            fileSyncEnabled: false,
+            conversationParser: ConversationParser(codexSessionsRoot: codexRoot),
+            statusCheckIntervalSeconds: 30,
+            persistenceURL: persistenceURL,
+            bridgeSnapshotDirectory: root.appendingPathComponent("bridge", isDirectory: true)
+        )
+        await store.startPeriodicStatusCheck()
+        let deadline = Date().addingTimeInterval(3)
+        var confirmed: SessionState?
+        var timedOut: SessionState?
+        while Date() < deadline {
+            confirmed = await store.session(for: confirmedID)
+            timedOut = await store.session(for: timedOutID)
+            if confirmed != nil, timedOut != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        await store.stopPeriodicStatusCheck()
+
+        XCTAssertEqual(confirmed?.phase, .waitingForInput)
+        XCTAssertEqual(
+            try XCTUnwrap(confirmed?.completedAt).timeIntervalSince1970,
+            confirmedAt.timeIntervalSince1970,
+            accuracy: 1
+        )
+        XCTAssertFalse(confirmed?.completionWasStaleTimeout ?? true)
+        XCTAssertEqual(timedOut?.phase, .processing)
+        XCTAssertNil(timedOut?.completedAt)
     }
 }
