@@ -1045,6 +1045,8 @@ struct NotchStudioSettingsView: View {
                 )
             }
 
+            CustomAgentAppearanceSettings(preferences: preferences)
+
             settingsTitle(
                 t("Environment", "运行环境"),
                 caption: t(

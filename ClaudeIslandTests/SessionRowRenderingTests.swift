@@ -52,6 +52,8 @@ final class SessionRowRenderingTests: XCTestCase {
             ForEach(fixtures) { session in
                 InstanceRow(
                     session: session, language: language,
+                    sourceDisplayName: session.source.displayName,
+                    sourceSymbolName: session.source.symbolName,
                     focusFailed: session.sessionId == "offline-row-fixture-5",
                     onFocus: action, onChat: action, onArchive: action,
                     onApprove: action, onReject: action

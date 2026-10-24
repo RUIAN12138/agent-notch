@@ -73,6 +73,8 @@ struct ClaudeInstancesView: View {
                         InstanceRow(
                             session: session,
                             language: preferences.language,
+                            sourceDisplayName: preferences.displayName(for: session.source),
+                            sourceSymbolName: preferences.symbolName(for: session.source),
                             focusFailed: focusFailureSessionId == session.sessionId,
                             onFocus: { focusSession(session) },
                             onChat: { openChat(session) },
@@ -191,6 +193,8 @@ struct ClaudeInstancesView: View {
 struct InstanceRow: View {
     let session: SessionState
     let language: AppLanguage
+    let sourceDisplayName: String
+    let sourceSymbolName: String
     let focusFailed: Bool
     let onFocus: () -> Void
     let onChat: () -> Void
@@ -276,10 +280,10 @@ struct InstanceRow: View {
 
     private var metadata: some View {
         HStack(spacing: 5) {
-            Image(systemName: session.source.symbolName)
+            Image(systemName: sourceSymbolName)
                 .foregroundStyle(session.source.accentColor)
                 .accessibilityHidden(true)
-            Text(session.source.displayName)
+            Text(sourceDisplayName)
                 .fixedSize()
             if session.projectName != session.displayTitle {
                 Text("·").accessibilityHidden(true)
@@ -298,7 +302,7 @@ struct InstanceRow: View {
         }
         .font(.system(size: 11))
         .foregroundStyle(.white.opacity(0.65))
-        .help("\(session.source.displayName) · \(session.cwd)")
+        .help("\(sourceDisplayName) · \(session.cwd)")
     }
 
     @ViewBuilder

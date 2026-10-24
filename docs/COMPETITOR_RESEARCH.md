@@ -200,3 +200,9 @@ Agent Notch 采纳的是“默认不改变既有行为、显式选择后才跟�
 ### 本轮结论与下一候选
 
 Codex 原生提问已完成协议边界审查，但因为协议仍标记为 experimental 且当前 app-server 控制通道缺失，暂不实现。后续候选优先聚焦 Agent Notch 已有会话/审批状态的真实端到端验收与可靠性缺口；所有基于 Vibe Island、Boring Notch 的判断继续限于已留存的静态包证据、公开更新记录和 Boring Notch 源码，不能外推为运行时结论。
+
+### 自定义 Agent 的外观配置（2026-10-24）
+
+[Vibe Island 官方 1.0.55 更新记录](https://vibeisland.app/changelog/)称自定义 Agent 可以显示自己的图标；但当前公开的[集成指南](https://vibeisland.app/docs/custom-agents-agent-guide/)仍把自定义图标列为暂不支持。两份官方资料存在版本/文档不一致，因此这里只把“区分自定义 Agent 的名称和图标”视为产品方向，不据此推断 Vibe Island 的私有 manifest 或渲染实现，也不声称 1.0.55 安装包已被本机静态检查。
+
+Agent Notch 采用更窄的本地实现：设置页允许为 Bridge 自定义来源 slug 配置显示名称及白名单 SF Symbol；覆盖仅用于刘海 Agent 徽标和会话列表，不改变来源身份、Hook 事件、消息传递或权限决策，删除资料即可恢复默认外观。内置 Agent 不可被此配置覆盖。名称长度、控制字符、图标白名单和资料数量均受限制；自动化测试只验证模型、UserDefaults 持久化与视图编译/渲染，不替代真实 Hook 回合或已安装应用的 UI 验收。

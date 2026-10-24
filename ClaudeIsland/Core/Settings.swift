@@ -249,6 +249,7 @@ final class NotchPreferences: ObservableObject {
         static let compactWidth = "notchCompactWidth"
         static let approvalMode = "notchApprovalMode"
         static let sessionApprovalModes = "notchSessionApprovalModes"
+        static let customAgentAppearances = "notchCustomAgentAppearances"
     }
 
     private let defaults: UserDefaults
@@ -435,6 +436,12 @@ final class NotchPreferences: ObservableObject {
     /// choosing a mode in a chat stores an override for that session only.
     @Published private(set) var sessionApprovalModes: [String: ApprovalMode]
 
+    /// Explicitly configured, local-only presentation overrides keyed by the
+    /// custom source slug. Built-in source identities are never overridden.
+    @Published private(set) var customAgentAppearances: [String: CustomAgentAppearance] {
+        didSet { persistCustomAgentAppearances() }
+    }
+
     /// Width added around the physical camera housing while compact.
     /// Keeping this independent from the hardware notch width makes every
     /// slider step produce the same visible result on different Mac models.
@@ -534,6 +541,7 @@ final class NotchPreferences: ObservableObject {
             }
             result[entry.key] = mode
         }
+        customAgentAppearances = Self.loadCustomAgentAppearances(from: defaults)
         let storedCompactWidth =
             defaults.object(forKey: Keys.compactWidth) as? Double
             ?? Self.defaultCompactWidth
@@ -573,6 +581,106 @@ final class NotchPreferences: ObservableObject {
         }
         persistSessionApprovalModes()
         writeApprovalPolicy()
+    }
+
+    func customAgentAppearance(for source: AgentSource) -> CustomAgentAppearance? {
+        guard source.isCustom else { return nil }
+        return customAgentAppearances[source.rawValue]
+    }
+
+    func displayName(for source: AgentSource) -> String {
+        customAgentAppearance(for: source)?.displayName ?? source.displayName
+    }
+
+    func symbolName(for source: AgentSource) -> String {
+        customAgentAppearance(for: source)?.icon.rawValue ?? source.symbolName
+    }
+
+    @discardableResult
+    func addCustomAgentAppearance(for source: AgentSource) -> Bool {
+        guard source.isCustom,
+              customAgentAppearances[source.rawValue] == nil,
+              customAgentAppearances.count < CustomAgentAppearance.maximumProfiles else {
+            return false
+        }
+        let initialName = String(
+            source.displayName.prefix(CustomAgentAppearance.maximumDisplayNameLength)
+        )
+        guard let appearance = CustomAgentAppearance(
+            displayName: initialName,
+            icon: .terminal
+        ) else {
+            return false
+        }
+        var updated = customAgentAppearances
+        updated[source.rawValue] = appearance
+        customAgentAppearances = updated
+        return true
+    }
+
+    @discardableResult
+    func updateCustomAgentAppearance(
+        for source: AgentSource,
+        displayName: String,
+        icon: CustomAgentIcon
+    ) -> Bool {
+        guard source.isCustom,
+              customAgentAppearances[source.rawValue] != nil,
+              let appearance = CustomAgentAppearance(
+                  displayName: displayName,
+                  icon: icon
+              ) else {
+            return false
+        }
+        var updated = customAgentAppearances
+        updated[source.rawValue] = appearance
+        customAgentAppearances = updated
+        return true
+    }
+
+    func removeCustomAgentAppearance(for source: AgentSource) {
+        guard source.isCustom,
+              customAgentAppearances[source.rawValue] != nil else {
+            return
+        }
+        var updated = customAgentAppearances
+        updated.removeValue(forKey: source.rawValue)
+        customAgentAppearances = updated
+    }
+
+    private static func loadCustomAgentAppearances(
+        from defaults: UserDefaults
+    ) -> [String: CustomAgentAppearance] {
+        guard let stored = defaults.dictionary(
+            forKey: Keys.customAgentAppearances
+        ) as? [String: [String: String]] else {
+            return [:]
+        }
+        var appearances: [String: CustomAgentAppearance] = [:]
+        for (sourceID, fields) in stored {
+            guard appearances.count < CustomAgentAppearance.maximumProfiles,
+                  let source = AgentSource(rawValue: sourceID),
+                  source.isCustom,
+                  let displayName = fields["displayName"],
+                  let appearance = CustomAgentAppearance(
+                      displayName: displayName,
+                      icon: CustomAgentIcon(rawValue: fields["icon"] ?? "") ?? .terminal
+                  ) else {
+                continue
+            }
+            appearances[source.rawValue] = appearance
+        }
+        return appearances
+    }
+
+    private func persistCustomAgentAppearances() {
+        let stored = customAgentAppearances.mapValues { appearance in
+            [
+                "displayName": appearance.displayName,
+                "icon": appearance.icon.rawValue,
+            ]
+        }
+        defaults.set(stored, forKey: Keys.customAgentAppearances)
     }
 
     /// Auto approval is intentionally limited to the current app run. Explicit
