@@ -23,6 +23,7 @@ nonisolated enum LifecycleObservationOrigin: String, Equatable, Sendable {
 /// Redacted hook intent retained by the decision trace. The concrete target
 /// phase travels separately so permission inputs never enter the trace ring.
 nonisolated enum HookLifecycleSignal: String, Equatable, Sendable {
+    case ready
     case active
     case interaction
     case compacting
@@ -239,6 +240,7 @@ nonisolated enum LifecycleTransitionReason: String, Equatable, Sendable {
     case sessionNotFound
     case alreadyCurrent
     case hookPhaseAdvanced
+    case hookSessionReady
     case hookCompletion
     case hookSessionEnded
     case hookSessionRemoved
@@ -902,6 +904,33 @@ nonisolated enum LifecycleReducer {
         }
 
         switch signal {
+        case .ready:
+            let previous = next
+            next.source = observation.source
+            next.lastActivity = max(next.lastActivity, observedAt)
+            next.lastHookEventAt = max(
+                next.lastHookEventAt ?? .distantPast,
+                observedAt
+            )
+            // SessionStart means the CLI is available for a prompt. It is
+            // neither proof of a completed turn nor permission to downgrade
+            // an active, interrupted, failed, or approval phase. A fresh
+            // session created from its first hook becomes Ready without a
+            // fabricated completion timestamp.
+            if next.phase == .idle {
+                next.phase = observation.requestedPhase ?? .waitingForInput
+            }
+            guard next != previous else {
+                return LifecycleTransition(
+                    mutation: .none,
+                    reason: .alreadyCurrent
+                )
+            }
+            return LifecycleTransition(
+                mutation: .update(next),
+                reason: .hookSessionReady
+            )
+
         case .active, .interaction, .compacting:
             if next.phase == .interrupted || next.phase == .failed {
                 let isCodexGenerationStart = observation.source == .codex &&

@@ -315,7 +315,9 @@ actor SessionStore {
             from: event,
             observedAt: observedAt
         )
-        let newPhase = event.determinePhase(observedAt: observedAt)
+        let newPhase: SessionPhase? = event.event == "SessionStart"
+            ? .waitingForInput
+            : event.determinePhase(observedAt: observedAt)
         let isCompletionSignal =
             event.event == "Stop" ||
             event.event == "StopFailure" ||
@@ -327,6 +329,8 @@ actor SessionStore {
                 event.event == "SessionEnd"
                 ? .removed
                 : .ended
+        } else if event.event == "SessionStart" {
+            hookSignal = .ready
         } else if isCompletionSignal || newPhase == .waitingForInput {
             hookSignal = .completed
         } else if newPhase?.isWaitingForApproval == true {

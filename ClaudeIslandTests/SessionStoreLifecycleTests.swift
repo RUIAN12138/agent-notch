@@ -20,6 +20,113 @@ private actor LifecycleHistoryReadGate {
 }
 
 final class SessionStoreLifecycleTests: XCTestCase {
+    func testSessionStartEntersReadyWithoutCreatingCompletionBoundary() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "session-start-ready-fixture"
+        let startedAt = Date()
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SessionStart",
+            status: "waiting_for_input",
+            observedAt: startedAt,
+            source: "claude"
+        )))
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertEqual(session.phase, .waitingForInput)
+        XCTAssertNil(session.completedAt)
+        XCTAssertEqual(
+            SessionRowPresentation(session: session).status,
+            .ready
+        )
+        let trace = await store.lifecycleTrace(for: sessionId)
+        XCTAssertEqual(trace.last?.evidence, .hook(.ready))
+        XCTAssertEqual(trace.last?.reason, .hookSessionReady)
+    }
+
+    func testSessionStartDoesNotMoveAnExistingCompletionBoundary() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "session-start-after-completion-fixture"
+        let promptAt = Date().addingTimeInterval(-3)
+        let stoppedAt = promptAt.addingTimeInterval(1)
+        let sessionStartAt = stoppedAt.addingTimeInterval(1)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: promptAt,
+            source: "claude"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "Stop",
+            status: "waiting_for_input",
+            observedAt: stoppedAt,
+            source: "claude"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SessionStart",
+            status: "waiting_for_input",
+            observedAt: sessionStartAt,
+            source: "claude"
+        )))
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertEqual(
+            try XCTUnwrap(session.completedAt).timeIntervalSince1970,
+            stoppedAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            SessionRowPresentation(session: session).status,
+            .completed
+        )
+    }
+
+    func testSessionStartDoesNotDowngradeAnActiveTurn() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "session-start-active-fixture"
+        let promptAt = Date().addingTimeInterval(-2)
+        let sessionStartAt = promptAt.addingTimeInterval(1)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: promptAt,
+            source: "claude"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SessionStart",
+            status: "waiting_for_input",
+            observedAt: sessionStartAt,
+            source: "claude"
+        )))
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertEqual(session.phase, .processing)
+        XCTAssertNil(session.completedAt)
+    }
+
     func testHookTraceRetainsConcreteProtocolEventNames() async {
         let store = SessionStore(persistenceEnabled: false, fileSyncEnabled: false,
                                  externalLifecycleEffectsEnabled: false)
