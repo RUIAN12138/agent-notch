@@ -269,6 +269,19 @@ final class SubagentCompletionAttentionTests: XCTestCase {
         XCTAssertFalse(state.hasAgentActivityInCurrentTurn)
     }
 
+    func testPriorTurnAgentAloneCannotFinishNewRootTurn() {
+        var state = SubagentHookState()
+        state.beginRootTurn(at: 10)
+        state.observeStart(agentID: "old-agent", at: 11)
+        XCTAssertTrue(state.consumeRootResponse(at: 12))
+        state.beginRootTurn(at: 13)
+
+        let oldCompletion = state.observeStop(agentID: "old-agent", at: 14)
+
+        XCTAssertFalse(oldCompletion.shouldPresentIndividualCompletion)
+        XCTAssertFalse(oldCompletion.completedAllActiveAgents)
+    }
+
     func testAttentionTimingSelectsIndividualOrAllFinishedCursor() throws {
         var session = SessionState(
             sessionId: "team-timing",
@@ -536,6 +549,79 @@ final class SubagentCompletionAttentionTests: XCTestCase {
             0,
             accuracy: 0.001
         )
+        XCTAssertEqual(session.subagentCompletionGeneration, 1)
+        XCTAssertEqual(session.allSubagentsFinishedGeneration, 1)
+        XCTAssertTrue(session.subagentHookState.activeAgentIDs.isEmpty)
+    }
+
+    func testPreviousTurnSubagentCompletionDoesNotCountTowardNewTurn() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "subagent-previous-turn-\(UUID().uuidString)"
+        let firstTurn = Date()
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: firstTurn
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStart",
+            status: "processing",
+            observedAt: firstTurn.addingTimeInterval(1),
+            agentId: "previous-turn-agent"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "Stop",
+            status: "waiting_for_input",
+            observedAt: firstTurn.addingTimeInterval(2)
+        )))
+
+        let secondTurn = firstTurn.addingTimeInterval(3)
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: secondTurn
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStart",
+            status: "processing",
+            observedAt: secondTurn.addingTimeInterval(1),
+            agentId: "current-turn-agent"
+        )))
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStop",
+            status: "processing",
+            observedAt: secondTurn.addingTimeInterval(2),
+            agentId: "previous-turn-agent"
+        )))
+
+        var stored = await store.session(for: sessionId)
+        var session = try XCTUnwrap(stored)
+        XCTAssertEqual(session.subagentCompletionGeneration, 0)
+        XCTAssertEqual(session.allSubagentsFinishedGeneration, 0)
+        XCTAssertEqual(session.subagentHookState.activeAgentIDs, ["current-turn-agent"])
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "SubagentStop",
+            status: "processing",
+            observedAt: secondTurn.addingTimeInterval(3),
+            agentId: "current-turn-agent"
+        )))
+
+        stored = await store.session(for: sessionId)
+        session = try XCTUnwrap(stored)
         XCTAssertEqual(session.subagentCompletionGeneration, 1)
         XCTAssertEqual(session.allSubagentsFinishedGeneration, 1)
         XCTAssertTrue(session.subagentHookState.activeAgentIDs.isEmpty)

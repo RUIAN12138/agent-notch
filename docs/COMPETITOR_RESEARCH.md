@@ -214,3 +214,11 @@ Codex 原生提问已完成协议边界审查，但因为协议仍标记为 expe
 [Vibe Island 官方 1.0.55 更新记录](https://vibeisland.app/changelog/)称自定义 Agent 可以显示自己的图标；但当前公开的[集成指南](https://vibeisland.app/docs/custom-agents-agent-guide/)仍把自定义图标列为暂不支持。两份官方资料存在版本/文档不一致，因此这里只把“区分自定义 Agent 的名称和图标”视为产品方向，不据此推断 Vibe Island 的私有 manifest 或渲染实现，也不声称 1.0.55 安装包已被本机静态检查。
 
 Agent Notch 采用更窄的本地实现：设置页允许为 Bridge 自定义来源 slug 配置显示名称及白名单 SF Symbol；覆盖仅用于刘海 Agent 徽标和会话列表，不改变来源身份、Hook 事件、消息传递或权限决策，删除资料即可恢复默认外观。内置 Agent 不可被此配置覆盖。名称长度、控制字符、图标白名单和资料数量均受限制；自动化测试只验证模型、UserDefaults 持久化与视图编译/渲染，不替代真实 Hook 回合或已安装应用的 UI 验收。
+
+### 子 Agent 完成与根回合代际隔离（2026-10-24）
+
+Vibe Island 官方 `1.0.55` 更新记录称，根会话回复后仍在运行的后台子 Agent 不应令已完成卡片重新变成 Working；`1.0.51` 还列出避免长任务被旧 transcript 或上一回合时间戳误判为 Ready 的修复。这些是上游发布说明，不是本机竞品运行观察。参考：[Vibe Island 官方更新记录](https://vibeisland.app/changelog/)。
+
+Agent Notch 的精确 ID 配对虽然能区分并行 Agent，却仍有一个跨代际边界：旧根回合的 Agent 若在下一轮开始后才结束，它的 Stop 时间落在新根回合内，旧逻辑会把它计作新一轮完成提醒。新增回归测试先复现了该误报（旧 Agent Stop 增加完成代次），随后改为只让当前根回合内启动的活动 Agent 参与单体/全部完成提醒判断；旧 Agent 仍可被清理，但不会冒充新回合活动。当前根代际由已保存的 Hook 时间戳确定，无需改变快照 schema，也保留没有根时间戳时的中途启动兼容行为。
+
+`SubagentCompletionAttentionTests` 定向套件为 17 passed、0 failed；新用例覆盖旧 Agent 晚结束时新一轮仍有 Agent 活动，以及旧 Agent 是新一轮唯一尚未结束的 Agent 两种时序。完整 macOS XCTest 为 433 passed、0 failed、0 skipped；另有 `ProcessExecutorTests.swift` 的 QoS 优先级反转运行时警告。结果是本地状态逻辑回归证据，不证明真实 Claude Hook 调度或安装后 UI 表现。

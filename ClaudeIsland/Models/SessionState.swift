@@ -429,6 +429,16 @@ nonisolated struct SubagentHookState: Codable, Equatable, Sendable {
         })
     }
 
+    private var activeAgentIDsInCurrentRootTurn: Set<String> {
+        Set(agents.compactMap { id, state in
+            guard state.isActive,
+                  isCurrentRootTurnAgentState(state) else {
+                return nil
+            }
+            return id
+        })
+    }
+
     mutating func observeStart(agentID: String, at observedAt: TimeInterval) {
         guard isValid(agentID: agentID, observedAt: observedAt),
               isInsideCurrentRootTurn(observedAt),
@@ -479,13 +489,18 @@ nonisolated struct SubagentHookState: Codable, Equatable, Sendable {
         }
 
         let previous = agents[agentID]
-        let hadActiveAgent = previous?.isActive == true
-        let hadAnyActiveAgents = !activeAgentIDs.isEmpty
+        // A child can outlive its root response. If a new root turn starts
+        // before that old child stops, its completion must not count as
+        // activity (or "all done") for the new turn.
+        let completedCurrentTurnAgent = previous.map {
+            $0.isActive && isCurrentRootTurnAgentState($0)
+        } ?? false
+        let hadAnyActiveAgents = !activeAgentIDsInCurrentRootTurn.isEmpty
         agents[agentID] = SubagentHookAgentState(
             isActive: false,
             observedAt: observedAt
         )
-        let hasNoActiveAgents = activeAgentIDs.isEmpty
+        let hasNoActiveAgents = activeAgentIDsInCurrentRootTurn.isEmpty
         pruneCompletedAgentsIfNeeded()
         let mayNotifyForCurrentTurn = isInsideCurrentRootTurn(observedAt)
         let rootAlreadyRespondedToCurrentTurn: Bool
@@ -501,10 +516,10 @@ nonisolated struct SubagentHookState: Codable, Equatable, Sendable {
             // root has responded, require a matched active identity.
             shouldPresentIndividualCompletion:
                 mayNotifyForCurrentTurn &&
-                    (hadActiveAgent ||
+                    (completedCurrentTurnAgent ||
                         (previous == nil && !rootAlreadyRespondedToCurrentTurn)),
             completedAllActiveAgents:
-                mayNotifyForCurrentTurn && hadActiveAgent &&
+                mayNotifyForCurrentTurn && completedCurrentTurnAgent &&
                     hadAnyActiveAgents && hasNoActiveAgents
         )
     }
@@ -517,6 +532,13 @@ nonisolated struct SubagentHookState: Codable, Equatable, Sendable {
     private func isInsideCurrentRootTurn(_ observedAt: TimeInterval) -> Bool {
         observedAt >= (rootTurnStartedAt ?? -.infinity) &&
             observedAt > (lastRootResponseAt ?? -.infinity)
+    }
+
+    private func isCurrentRootTurnAgentState(
+        _ state: SubagentHookAgentState
+    ) -> Bool {
+        guard let rootTurnStartedAt else { return true }
+        return state.observedAt >= rootTurnStartedAt
     }
 
     private mutating func pruneCompletedAgentsIfNeeded() {
