@@ -20,13 +20,17 @@ private final class RecoveryWatcher: SessionInterruptWatching {
 
 @MainActor
 final class SessionStoreWatcherRecoveryTests: XCTestCase {
-    private func lifecycleHook(_ event: String, at time: Date) -> SessionEvent {
+    private func lifecycleHook(
+        _ event: String,
+        at time: Date,
+        agentId: String? = nil
+    ) -> SessionEvent {
         .hookReceived(HookEvent(
             sessionId: "late-child-fixture", cwd: "/tmp/late-child-fixture",
             event: event, status: event == "Stop" ? "waiting_for_input" : "processing",
             observedAt: time.timeIntervalSince1970, source: "claude",
             pid: nil, tty: nil, tool: nil, toolInput: nil, toolUseId: nil,
-            notificationType: nil, message: nil
+            notificationType: nil, message: nil, agentId: agentId
         ))
     }
 
@@ -79,6 +83,44 @@ final class SessionStoreWatcherRecoveryTests: XCTestCase {
         XCTAssertEqual(interrupted?.phase, .idle)
         XCTAssertTrue(watcher.watching.isEmpty)
         XCTAssertEqual(watcher.installationCount, 1)
+    }
+
+    func testLateSubagentStartCannotReviveCompletedParent() async throws {
+        let watcher = RecoveryWatcher()
+        let store = SessionStore(persistenceEnabled: false, fileSyncEnabled: false,
+                                 interruptWatcher: watcher)
+        let start = Date().addingTimeInterval(-10)
+        await store.process(lifecycleHook("UserPromptSubmit", at: start))
+        let stop = start.addingTimeInterval(1)
+        await store.process(lifecycleHook("Stop", at: stop))
+        let beforeChild = await store.session(for: "late-child-fixture")
+        XCTAssertNotNil(beforeChild?.completedAt)
+
+        await store.process(lifecycleHook(
+            "SubagentStart",
+            at: stop.addingTimeInterval(1),
+            agentId: "late-agent"
+        ))
+
+        let completed = await store.session(for: "late-child-fixture")
+        XCTAssertEqual(completed?.phase, .waitingForInput)
+        XCTAssertEqual(completed?.completedAt, beforeChild?.completedAt)
+        XCTAssertEqual(completed?.subagentHookState.activeAgentIDs, [])
+        XCTAssertTrue(watcher.watching.isEmpty)
+        let rejected = await store.lifecycleTrace(for: "late-child-fixture")
+        XCTAssertEqual(rejected.last?.reason, .subagentStartCannotResume)
+        XCTAssertEqual(rejected.last?.hookEventName, .subagentStart)
+        XCTAssertEqual(rejected.last?.accepted, false)
+
+        await store.process(lifecycleHook(
+            "UserPromptSubmit",
+            at: stop.addingTimeInterval(2)
+        ))
+        let resumed = await store.session(for: "late-child-fixture")
+        XCTAssertEqual(resumed?.phase, .processing)
+        XCTAssertNil(resumed?.completedAt)
+        XCTAssertEqual(resumed?.subagentHookState.activeAgentIDs, [])
+        XCTAssertEqual(watcher.watching, ["late-child-fixture"])
     }
 
     private struct Fixture {

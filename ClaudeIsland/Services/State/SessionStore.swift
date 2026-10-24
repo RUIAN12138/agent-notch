@@ -492,7 +492,9 @@ actor SessionStore {
             )
         }
         let mayStartTrackedWork = shouldApplyLifecycle ||
-            (event.event != "PreToolUse" && !isExactPendingCompletion)
+            (event.event != "PreToolUse" &&
+                event.event != "SubagentStart" &&
+                !isExactPendingCompletion)
         if mayStartTrackedWork && didAcceptExactPendingCompletion {
             processToolTracking(event: event, session: &session)
             // Even a late SubagentStop may clear its exact ID from the active

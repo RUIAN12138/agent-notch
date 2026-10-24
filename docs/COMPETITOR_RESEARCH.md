@@ -90,6 +90,14 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 
 本轮继续审计提醒重叠时发现，队友完成代次原先会先记入“已处理”，随后才检查审批优先级；如果审批正打开面板，队友完成不抢占面板，但也不会在审批解决后再提示。现在策略明确区分“呈现 / 暂缓 / 丢弃”：仍在原完成停留时间内且被自动展开交互或短暂 `.popping` 阻挡的代次保持未消费，在 pending 状态变化或 pop 转场结束后重试；已过期、静音、设置关闭或面板已由用户接管的事件按原策略丢弃。该改动参考 Boring Notch [`v2.8-rc.1` 源码](https://github.com/TheBoredTeam/boring.notch/blob/v2.8-rc.1/boringNotch/ContentView.swift)的有序短暂活动思路，但不是把其音乐/通知活动栈直接移植到 Agent Notch。新增测试覆盖审批阻塞后恢复、pop 转场、用户接管、静音、关闭设置与超时边界；仍属于策略/本地状态逻辑测试，不是实际 UI 或真实 Hook 回合验收。
 
+### 根回合结束后的迟到子 Agent 启动
+
+Vibe Island `1.0.55` 官方更新记录声称，根 Agent 完成后仍在运行的后台子 Agent 不应让根会话卡片重新显示 Working。这是上游公开行为主张，不是本地竞品运行观察或 REA 对私有二进制的结论。
+
+对照当前 SessionStore 的真实 Hook 序列后发现，旧规则只阻止 `SubagentStop` 复活已完成根会话，却允许时间较新的 `SubagentStart` 进入 reducer。首次回归测试确认该路径会把根状态从已完成改为 processing；增加 reducer 边界后，测试又揭示 `SessionStore` 仍会在生命周期裁决拒绝该事件时更新 `SubagentHookState`，制造一个根卡片已完成但子 Agent 集合仍显示活动的矛盾状态。
+
+现在 `.subagentStartCannotResume` 在根 `completedAt` 或 `.ended` 边界拒绝子 Agent Start，并被列入拒绝消费的观察类型；`SessionStore` 只在生命周期接受该 Start 时才登记活动子 Agent。旧的精确 ID `SubagentStop` 清理路径仍可消费迟到 Stop，不影响下一次真实 `UserPromptSubmit` 创建新一代根回合。`SessionStoreWatcherRecoveryTests.testLateSubagentStartCannotReviveCompletedParent` 覆盖根相位、完成时间、活动 ID、watcher 和诊断裁决；这仍是本地状态机测试，不证明真实 Claude CLI 的后台任务顺序或安装后 UI。
+
 ## Codex rollout 活动新鲜度
 
 [Vibe Island 官方更新记录](https://vibeisland.app/changelog/)在 `1.0.54` 条目中声称修复了 Claude/Codex 长任务因 transcript 时间戳陈旧而过早变为 Ready 的问题。它是厂商发布说明，不是我们对竞品运行时行为的独立复现；本轮遵守“仅静态分析”，没有启动 Vibe Island 或 Boring Notch。

@@ -245,6 +245,7 @@ nonisolated enum LifecycleTransitionReason: String, Equatable, Sendable {
     case hookSessionEnded
     case hookSessionRemoved
     case hookOlderThanBoundary
+    case subagentStartCannotResume
     case subagentCompletionCannotResume
     case invalidHookPhase
     case interactionResolved
@@ -304,6 +305,7 @@ nonisolated struct LifecycleTransition: Equatable, Sendable {
              .failureAfterInterruption,
              .sessionNotFound,
              .hookOlderThanBoundary,
+             .subagentStartCannotResume,
              .subagentCompletionCannotResume,
              .invalidHookPhase,
              .interactionOlderThanCompletion,
@@ -944,6 +946,18 @@ nonisolated enum LifecycleReducer {
                         reason: .activeWithoutNewGeneration
                     )
                 }
+            }
+            // A background child may outlive the root response, but its late
+            // start callback is not a new root turn. In particular, do not
+            // reopen the parent card after Stop (the child-state cursor also
+            // rejects starts outside the current root turn). Only a root
+            // lifecycle event such as UserPromptSubmit can resume it.
+            if observation.hookEventName == .subagentStart,
+               next.completedAt != nil || next.phase == .ended {
+                return LifecycleTransition(
+                    mutation: .none,
+                    reason: .subagentStartCannotResume
+                )
             }
             // Claude may finish an internal/background subagent after the
             // parent's Stop (e.g. an interactive prompt-suggestion task). Its
