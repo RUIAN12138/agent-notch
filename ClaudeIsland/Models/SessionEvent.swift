@@ -196,8 +196,10 @@ struct ToolCompletionResult: Sendable {
 
 extension HookEvent {
     /// Bridge processes stamp events before doing any I/O. Use that time to
-    /// order phase transitions, but reject implausible values so a malformed
-    /// local payload cannot suppress every later state change.
+    /// order phase transitions. Missing or malformed values use the receipt
+    /// time; implausibly future values are clamped so they cannot suppress
+    /// later state changes. Old finite values remain old so callers can reject
+    /// them instead of accidentally promoting a delayed event to "now".
     nonisolated func lifecycleObservedDate(
         receivedAt: Date = Date()
     ) -> Date {
@@ -205,12 +207,23 @@ extension HookEvent {
               observedAt.isFinite else {
             return receivedAt
         }
-        let candidate = Date(timeIntervalSince1970: observedAt)
-        guard candidate <= receivedAt.addingTimeInterval(5 * 60),
-              candidate >= receivedAt.addingTimeInterval(-24 * 60 * 60) else {
+        guard observedAt <= receivedAt.timeIntervalSince1970 + 5 * 60 else {
             return receivedAt
         }
-        return candidate
+        return Date(timeIntervalSince1970: observedAt)
+    }
+
+    /// Source timestamps older than this cannot safely describe a live Hook
+    /// transition. Keep this check separate from timestamp normalization so a
+    /// stale event is ignored rather than made newer than the current turn.
+    nonisolated func hasImplausiblyOldLifecycleTimestamp(
+        receivedAt: Date = Date()
+    ) -> Bool {
+        guard let observedAt,
+              observedAt.isFinite else {
+            return false
+        }
+        return observedAt < receivedAt.timeIntervalSince1970 - 24 * 60 * 60
     }
 
     /// Determine the target session phase based on this hook event. Informational

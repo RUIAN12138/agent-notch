@@ -798,6 +798,38 @@ final class PermissionRoutingTests: XCTestCase {
     }
 
     @MainActor
+    func testAncientPermissionTimestampRemainsBeforeCompletionBoundary() async throws {
+        let path = "/tmp/agent-notch-test-\(UUID().uuidString).sock"
+        let server = HookSocketServer(socketPath: path)
+        defer { server.stop(); unlink(path) }
+        let received = expectation(description: "ancient request registered")
+        await startPrivateServer(server, path: path, received: received)
+        let client = try connect(to: path)
+        defer { close(client) }
+
+        let observedAt = Date().addingTimeInterval(-(25 * 60 * 60))
+        try sendPermission(
+            client: client,
+            sessionId: "fixture",
+            toolUseId: "ancient",
+            observedAt: observedAt,
+            source: "claude"
+        )
+        await fulfillment(of: [received], timeout: 3)
+
+        // This completion predates delivery but follows the request's actual
+        // source time. Normalizing the stale timestamp to receipt time would
+        // incorrectly leave the obsolete permission socket open.
+        server.cancelPendingPermission(
+            sessionId: "fixture",
+            toolUseId: "ancient",
+            completedAt: Date().addingTimeInterval(-(12 * 60 * 60))
+        )
+        assertEOF(client: client)
+        XCTAssertFalse(server.hasPendingPermission(sessionId: "fixture"))
+    }
+
+    @MainActor
     private func batchStore(canceller: any SessionPermissionCancelling) throws -> SessionStore {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("agent-notch-batch-store-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

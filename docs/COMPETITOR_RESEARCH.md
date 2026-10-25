@@ -317,3 +317,13 @@ Boring Notch `v2.7.3` 的公开源码 `ContentView.handleHover` 会取消旧延�
 Agent Notch 的 `ClaudeSessionMonitor` 在停止时会异步排队停止 `SessionStore` 的轮询；如果显示器切换重建窗口后，新监控的 socket 就绪回调先启动轮询、旧停止 Task 后到，旧调用此前会无条件取消当前任务。旧 socket 启动回调也可能在同一个 Monitor 再次启动后仅凭 `isMonitoring == true` 误认自己仍有效。现为每次监控启动分配全局递增代际：迟到启动回调必须匹配当前代际；SessionStore 记录轮询所有者并将已运行任务交给新代际，旧代际停止会被忽略。代际高水位在停止后保留，因此同代际的迟到启动也不能复活已停止轮询；当前代际停止仍可正常取消。
 
 新增 `SessionStoreColdStartTests.testLateStopFromPreviousMonitorDoesNotStopNewPollingLifecycle`、`testLateStartFromStoppedMonitorCannotRestartPolling` 和 `testStopDeliveredBeforeStartCallbackCannotBeReorderedIntoRestart`：覆盖旧停止取消新轮询、迟到启动复活已停止轮询，以及停止先于尚未执行的启动到达 Actor；前两种场景先在旧实现下复现失败，第三种验证代际高水位在无活动所有者时也能退休旧请求。该测试是可控 actor 调度顺序下的源代码回归证据，不是实际显示器热插拔、真实 Hook 调度或桌面 UI 验收；本轮仍未启动 Vibe Island 或 Boring Notch。
+
+### 过期 Hook 时间戳不能被提升为“刚刚到达”（2026-10-25）
+
+REA 留存的 Vibe Island 设置资源说明其完成通知/展开有独立停留时长；Boring Notch `v2.7.3` 源码则在悬停延迟任务触发前复核当前指针和视图状态。这些是包内文案与源码观察，不是竞品运行时结论。它们再次提示：延迟处理应保留事件时间，并在影响当前状态前核对边界。
+
+Agent Notch 自身的 `HookEvent.lifecycleObservedDate` 原先把“比接收时刻早超过 24 小时”的有限时间戳改成接收时刻。旧的 `PreToolUse` 因而可能越过已完成边界，让卡片重回 processing；同一归一化还被权限 Socket 用来判断请求是否早于完成，可能把陈旧请求当成新请求而不关闭。现改为：缺失/非有限时间仍以接收时间兼容；超过 5 分钟的未来值仍钳制到接收时间；超过 24 小时的旧 Hook 则显式忽略，同时 `lifecycleObservedDate` 保留它的真实旧值供权限边界比较。
+
+新增 `SessionStoreLifecycleTests.testAncientHookTimestampCannotReviveCompletedSession`、`testAncientHookTimestampCannotCreateSession` 和 `testAncientHookTimestampRemainsOlderThanItsReceiptTime`；前两项先在旧实现下复现失败。`PermissionRoutingTests.testAncientPermissionTimestampRemainsBeforeCompletionBoundary` 验证过期请求在其真实时间早于完成边界时会关闭。以上是本地源代码与 XCTest 的时序证据，不证明竞品私有状态机、真实 Hook 延迟分布或已安装 UI；本轮没有启动竞品应用。
+
+相关 `SessionStoreLifecycleTests` 与 `PermissionRoutingTests` 定向套件合计 64 passed、0 failed；最终完整 macOS XCTest 为 474 passed、0 failed、0 skipped。该结果验证当前源码的自动化行为，不替代真实 Agent Hook 调度或桌面运行验收。
