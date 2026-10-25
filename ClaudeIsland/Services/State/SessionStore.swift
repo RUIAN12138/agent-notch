@@ -131,6 +131,12 @@ actor SessionStore {
 
     /// Initial discovery and subsequent periodic status checks share one task.
     private var statusCheckTask: Task<Void, Never>?
+    /// The active monitor lifecycle that currently owns the shared polling task.
+    /// A delayed stop from an older monitor must not cancel a newer lifecycle.
+    private var statusCheckOwner: UInt64?
+    /// Keep the high-water mark after stopping so an already-enqueued start
+    /// callback from that same (or an older) monitor cannot resurrect polling.
+    private var latestStatusCheckGeneration: UInt64 = 0
 
     /// A one-second fallback keeps the UI responsive if an agent drops a hook
     /// event. Normal hook delivery and the first discovery remain immediate.
@@ -2317,7 +2323,16 @@ actor SessionStore {
     /// Join already-running native tasks before waiting for the first timer.
     /// Restoration and polling live in one cancellable task so a later stop
     /// cannot accidentally start a second discovery sweep.
-    func startPeriodicStatusCheck() async {
+    func startPeriodicStatusCheck(owner: UInt64? = nil) async {
+        if let owner {
+            guard owner >= latestStatusCheckGeneration else { return }
+            if owner == latestStatusCheckGeneration {
+                guard statusCheckOwner == owner else { return }
+            } else {
+                latestStatusCheckGeneration = owner
+                statusCheckOwner = owner
+            }
+        }
         guard statusCheckTask == nil else { return }
         statusCheckTask = Task { [weak self] in
             await self?.runPeriodicStatusChecks()
@@ -2348,7 +2363,14 @@ actor SessionStore {
     }
 
     /// Stop periodic status checking
-    func stopPeriodicStatusCheck() {
+    func stopPeriodicStatusCheck(owner: UInt64? = nil) {
+        if let owner {
+            guard owner >= latestStatusCheckGeneration else { return }
+            // Retire this generation even if its start request has not reached
+            // the actor yet. Actor scheduling may deliver the stop first.
+            latestStatusCheckGeneration = owner
+        }
+        statusCheckOwner = nil
         statusCheckTask?.cancel()
         statusCheckTask = nil
         Self.logger.info("Stopped periodic status check")

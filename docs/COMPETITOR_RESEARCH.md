@@ -309,3 +309,11 @@ Vibe Island 官方更新页目前列出的最新版本为 `1.0.55`（2026-10-23�
 Agent Notch 已有默认关闭的 Codex 原生提问实验接入，并已实现处理中的当前步骤展示；目前没有后台命令/端口生命周期与停止操作。该功能暂不移植：列举端口和命令需要新的进程/网络监听数据源，而“一键停止”会扩大现有权限与进程控制面，不属于当前优先的状态可靠性收敛。审批卡方面，`ChatApprovalBar` 目前能显示工具名和有限长度的输入摘要；`PermissionContext` 没有独立的“操作理由”字段，所以不应从命令文本猜造理由。后续若接入来源明确提供的 rationale，应先保留来源字段并测试缺失/不可信内容的呈现，再调整卡片层级。
 
 本轮在当前工作树运行完整 macOS XCTest：466 passed、0 failed、0 skipped。Xcode 另记录 `ProcessExecutorTests.swift` 一条 QoS 优先级反转运行时警告；测试通过不等于真实 Hook 调度、实际进程/端口管理或已安装 UI 验收。
+
+### 监控轮换时隔离迟到的启动与停止（2026-10-25）
+
+Boring Notch `v2.7.3` 的公开源码 `ContentView.handleHover` 会取消旧延迟任务，并在触发前复核取消标记、悬停状态和当前视图状态。[对应源码](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/boringNotch/ContentView.swift)。这是静态源码观察；本轮只借鉴“异步回调执行前确认它仍属于当前生命周期”的原则，不声称 Boring Notch 采用相同的 Agent 监控架构。
+
+Agent Notch 的 `ClaudeSessionMonitor` 在停止时会异步排队停止 `SessionStore` 的轮询；如果显示器切换重建窗口后，新监控的 socket 就绪回调先启动轮询、旧停止 Task 后到，旧调用此前会无条件取消当前任务。旧 socket 启动回调也可能在同一个 Monitor 再次启动后仅凭 `isMonitoring == true` 误认自己仍有效。现为每次监控启动分配全局递增代际：迟到启动回调必须匹配当前代际；SessionStore 记录轮询所有者并将已运行任务交给新代际，旧代际停止会被忽略。代际高水位在停止后保留，因此同代际的迟到启动也不能复活已停止轮询；当前代际停止仍可正常取消。
+
+新增 `SessionStoreColdStartTests.testLateStopFromPreviousMonitorDoesNotStopNewPollingLifecycle`、`testLateStartFromStoppedMonitorCannotRestartPolling` 和 `testStopDeliveredBeforeStartCallbackCannotBeReorderedIntoRestart`：覆盖旧停止取消新轮询、迟到启动复活已停止轮询，以及停止先于尚未执行的启动到达 Actor；前两种场景先在旧实现下复现失败，第三种验证代际高水位在无活动所有者时也能退休旧请求。该测试是可控 actor 调度顺序下的源代码回归证据，不是实际显示器热插拔、真实 Hook 调度或桌面 UI 验收；本轮仍未启动 Vibe Island 或 Boring Notch。

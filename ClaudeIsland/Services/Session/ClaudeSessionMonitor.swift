@@ -13,6 +13,8 @@ import Foundation
 
 @MainActor
 class ClaudeSessionMonitor: ObservableObject {
+    private static var nextMonitoringGeneration: UInt64 = 0
+
     @Published var instances: [SessionState] = []
     @Published var pendingInstances: [SessionState] = []
 
@@ -20,6 +22,7 @@ class ClaudeSessionMonitor: ObservableObject {
     private var hookEventTask: Task<Void, Never>?
     private var hookEventContinuation: AsyncStream<SessionEvent>.Continuation?
     private var isMonitoring = false
+    private var monitoringGeneration: UInt64?
     private var sourceSessions: [SessionState] = []
 
     init() {
@@ -58,6 +61,9 @@ class ClaudeSessionMonitor: ObservableObject {
     func startMonitoring() {
         guard !isMonitoring else { return }
         isMonitoring = true
+        Self.nextMonitoringGeneration &+= 1
+        let monitoringGeneration = Self.nextMonitoringGeneration
+        self.monitoringGeneration = monitoringGeneration
         refreshPresentation()
 
         // HookSocketServer accepts connections on one serial queue, but
@@ -96,8 +102,11 @@ class ClaudeSessionMonitor: ObservableObject {
                 // Restoration also runs when listening fails, so snapshots are
                 // still available while the regular status poll stays active.
                 Task { @MainActor [weak self] in
-                    guard let self, self.isMonitoring else { return }
-                    await SessionStore.shared.startPeriodicStatusCheck()
+                    guard let self,
+                          self.monitoringGeneration == monitoringGeneration else { return }
+                    await SessionStore.shared.startPeriodicStatusCheck(
+                        owner: monitoringGeneration
+                    )
                 }
             }
         )
@@ -106,13 +115,19 @@ class ClaudeSessionMonitor: ObservableObject {
     func stopMonitoring() {
         guard isMonitoring else { return }
         isMonitoring = false
+        let stoppedMonitoringGeneration = monitoringGeneration
+        monitoringGeneration = nil
         HookSocketServer.shared.stop()
         hookEventContinuation?.finish()
         hookEventContinuation = nil
         hookEventTask?.cancel()
         hookEventTask = nil
-        Task {
-            await SessionStore.shared.stopPeriodicStatusCheck()
+        if let stoppedMonitoringGeneration {
+            Task {
+                await SessionStore.shared.stopPeriodicStatusCheck(
+                    owner: stoppedMonitoringGeneration
+                )
+            }
         }
         CodexAppServerQuestionBridge.shared.disable()
     }

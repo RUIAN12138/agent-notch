@@ -145,6 +145,110 @@ final class SessionStoreColdStartTests: XCTestCase {
         })
     }
 
+    func testLateStopFromPreviousMonitorDoesNotStopNewPollingLifecycle() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-notch-stale-poll-stop-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionId = UUID().uuidString
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            conversationParser: ConversationParser(codexSessionsRoot: root),
+            statusCheckIntervalSeconds: 1
+        )
+
+        // Model the actor arrival order where the new socket-ready callback
+        // starts polling before the previous monitor's queued stop is applied.
+        let previousMonitorID: UInt64 = 1
+        let currentMonitorID: UInt64 = 2
+        await store.startPeriodicStatusCheck(owner: previousMonitorID)
+        await store.startPeriodicStatusCheck(owner: currentMonitorID)
+        await store.stopPeriodicStatusCheck(owner: previousMonitorID)
+
+        // The session appears only after the stale stop. A live polling task
+        // must still discover it on its next sweep.
+        try writeActiveCodexRollout(root: root, sessionId: sessionId, cwd: root.path)
+        let deadline = Date().addingTimeInterval(3)
+        var discovered: SessionState?
+        while Date() < deadline {
+            discovered = await store.session(for: sessionId)
+            if discovered != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        await store.stopPeriodicStatusCheck(owner: currentMonitorID)
+
+        XCTAssertEqual(discovered?.phase, .processing)
+        XCTAssertEqual(discovered?.source, .codex)
+    }
+
+    func testLateStartFromStoppedMonitorCannotRestartPolling() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-notch-stale-poll-start-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionId = UUID().uuidString
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            conversationParser: ConversationParser(codexSessionsRoot: root),
+            statusCheckIntervalSeconds: 1
+        )
+        let stoppedMonitorID: UInt64 = 1
+
+        await store.startPeriodicStatusCheck(owner: stoppedMonitorID)
+        await store.stopPeriodicStatusCheck(owner: stoppedMonitorID)
+        // Model an already-enqueued socket-ready callback reaching the actor
+        // after the same monitor lifecycle has stopped.
+        await store.startPeriodicStatusCheck(owner: stoppedMonitorID)
+
+        try writeActiveCodexRollout(root: root, sessionId: sessionId, cwd: root.path)
+        try await Task.sleep(nanoseconds: 1_250_000_000)
+        let discovered = await store.session(for: sessionId)
+        await store.stopPeriodicStatusCheck(owner: stoppedMonitorID)
+
+        XCTAssertNil(discovered)
+    }
+
+    func testStopDeliveredBeforeStartCallbackCannotBeReorderedIntoRestart() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-notch-stop-before-start-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sessionId = UUID().uuidString
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            conversationParser: ConversationParser(codexSessionsRoot: root),
+            statusCheckIntervalSeconds: 1
+        )
+        let stoppedMonitorID: UInt64 = 1
+
+        // The stop task can enter the actor before a previously enqueued start
+        // job. It must retire the generation even when no owner is active yet.
+        await store.stopPeriodicStatusCheck(owner: stoppedMonitorID)
+        await store.startPeriodicStatusCheck(owner: stoppedMonitorID)
+
+        try writeActiveCodexRollout(root: root, sessionId: sessionId, cwd: root.path)
+        try await Task.sleep(nanoseconds: 1_250_000_000)
+        let discovered = await store.session(for: sessionId)
+        await store.stopPeriodicStatusCheck(owner: stoppedMonitorID)
+
+        XCTAssertNil(discovered)
+    }
+
     func testRepeatedNativeNoOpPollsDoNotEvictDiscoveryDecision() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("agent-notch-trace-sampling-\(UUID().uuidString)")
