@@ -98,27 +98,29 @@ class NotchWindowController: NSWindowController {
         // Dynamically toggle mouse event handling based on notch state:
         // - Closed: ignoresMouseEvents = true (clicks pass through to menu bar/apps)
         // - Opened: ignoresMouseEvents = false (buttons inside panel work)
-        viewModel.$status
+        let statusViewModel = viewModel
+        statusViewModel.$status
             // Capture the generation before receive(on:) queues delivery. A
             // status-only check can mistake an old `.opened` publication for
             // a fast close/reopen and schedule focus work for the new panel.
             .map { status in
                 NotchStatusDelivery(
                     status: status,
-                    presentationGeneration: self.viewModel.presentationGeneration
+                    presentationGeneration:
+                        statusViewModel.presentationGeneration
                 )
             }
             .receive(on: DispatchQueue.main)
-            .sink { [weak notchWindow, weak viewModel] delivery in
-                guard let viewModel,
+            .sink { [weak notchWindow, weak statusViewModel] delivery in
+                guard let statusViewModel,
                       delivery.matchesCurrentPresentation(
-                        status: viewModel.status,
-                        generation: viewModel.presentationGeneration
+                        status: statusViewModel.status,
+                        generation: statusViewModel.presentationGeneration
                       ) else { return }
                 switch delivery.status {
                 case .opened:
                     guard notchWindow?.allowsPresentationOnCurrentSpace == true else {
-                        viewModel.notchClose()
+                        statusViewModel.notchClose()
                         return
                     }
                     // Accept mouse events when opened so buttons work
@@ -128,18 +130,18 @@ class NotchWindowController: NSWindowController {
                     // activating the app behind it. Promoting it here makes
                     // the chat TextField usable immediately after opening,
                     // including when the panel was opened by a notification.
-                    if viewModel.openReason != .notification &&
-                       viewModel.openReason != .keyboard {
+                    if statusViewModel.openReason != .notification &&
+                       statusViewModel.openReason != .keyboard {
                         NSApp.activate(ignoringOtherApps: false)
                     }
                     notchWindow?.orderFrontRegardless()
                     notchWindow?.makeKey()
 
                     let generation = delivery.presentationGeneration
-                    let postInteractive = { [weak viewModel] in
+                    let postInteractive = { [weak statusViewModel] in
                         guard notchWindow?.isVisible == true,
                               notchWindow?.allowsPresentationOnCurrentSpace == true,
-                              viewModel?.canDeliverDeferredFocus(
+                              statusViewModel?.canDeliverDeferredFocus(
                                 generation: generation
                               ) == true else { return }
                         notchWindow?.makeKey()
