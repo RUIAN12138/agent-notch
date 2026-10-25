@@ -443,6 +443,39 @@ final class LifecycleReducerTests: XCTestCase {
         XCTAssertFalse(next.completionWasStaleTimeout)
     }
 
+    func testImplausibleFutureLifecycleEvidenceCannotAdvanceState() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        let future = now.addingTimeInterval(6 * 60)
+        let current = snapshot(lastActivity: now, turnStartedAt: now)
+        let observations = [
+            observation(
+                .active(turnStartedAt: future, lastEvidenceAt: future),
+                observedAt: now,
+                receivedAt: now
+            ),
+            observation(
+                .activeTool(
+                    turnStartedAt: now,
+                    lastEvidenceAt: now,
+                    toolStartedAt: future
+                ),
+                observedAt: now,
+                receivedAt: now
+            ),
+            observation(.completed(future), observedAt: now, receivedAt: now),
+            observation(.interrupted(future), observedAt: now, receivedAt: now),
+            observation(.failed(future), observedAt: now, receivedAt: now),
+            observation(.unknown, observedAt: future, receivedAt: now)
+        ]
+
+        for observation in observations {
+            let transition = reduce(current: current, observation: observation)
+            XCTAssertEqual(transition.reason, .implausibleFutureTimestamp)
+            XCTAssertEqual(transition.mutation, .none)
+            XCTAssertFalse(transition.acceptsObservation)
+        }
+    }
+
     func testPendingInteractionKeepsPriorityWhileActivityMetadataAdvances() throws {
         let requestAt = Date(timeIntervalSince1970: 7_000)
         let context = PermissionContext(

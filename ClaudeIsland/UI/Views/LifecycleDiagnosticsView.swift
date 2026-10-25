@@ -460,6 +460,7 @@ struct LifecycleDiagnosticsView: View {
         case "sourceMissingBeyondGrace": return t("Source missing beyond grace period", "数据源缺失已超过宽限期")
         case "creationNotAllowed": return t("Observation cannot create a session", "此证据不能创建会话")
         case "staleDiscovery": return t("Discovery is too old", "发现证据已过期")
+        case "implausibleFutureTimestamp": return t("Timestamp is too far in the future", "时间戳超前过多")
         case "activeOlderThanHook": return t("Activity predates a hook", "活动早于 Hook 证据")
         case "activeWithoutNewGeneration": return t("No newer turn boundary", "没有更新的回合边界")
         case "completionOlderThanHook": return t("Completion predates a hook", "完成证据早于 Hook")

@@ -345,3 +345,11 @@ Agent Notch 自身的 `HookEvent.lifecycleObservedDate` 原先把“比接收时
 现在从磁盘恢复时统一将晚于恢复时刻的日期钳制到恢复时刻，并覆盖 Hook/回合时间及子 Agent、工具边界的数值时间戳；移除会话墓碑仍以原始时间证据校验，未来快照值不能越过墓碑。新增 `SessionStoreColdStartTests.testColdStartClampsFuturePersistedCompletionToRestoreTime`，先在旧实现下失败，修复后通过。完整 macOS XCTest 为 478 passed、0 failed、0 skipped；Xcode 记录 `LifecycleDiagnosticsTests` 一条 QoS 优先级反转运行时警告。
 
 这验证的是本地冷启动快照恢复，不证明真实 Agent 时钟漂移、外部 Hook 延迟或安装后 UI。Vibe Island 与 Boring Notch 仍仅作静态分析，未启动应用。
+
+### 所有生命周期来源共享未来时间边界（2026-10-25）
+
+这次发现来自 Agent Notch 自身代码，不是竞品私有状态机结论：Hook 入口已有 5 分钟未来时间检查，冷启动快照也已归一化，但 `LifecycleReducer` 同时接收 transcript、Codex 原生轮询、Bridge 恢复等证据，这些入口此前没有共享校验。于是已写入文件的 assistant 最终回复若带未来时间，会把 `completedAt` 推到当前时间之后；后续真实回合即使已经开始，也可能因为早于该边界而无法改变状态。
+
+现在 Reducer 在任何状态迁移前统一校验 `observedAt` 及 active/tool/completed/failed/interrupted 携带的日期：非有限值或超前接收时刻 5 分钟以上的证据不参与状态变更，并在诊断轨迹中以 `implausibleFutureTimestamp` 标记。同步审批/提问仍由 Hook 接入层先归一化为本地接收时间，因此不会丢掉正在等待答复的卡片。新增 Reducer 状态矩阵与 transcript 文件更新回归；两项均先在旧实现下失败，修复后通过。完整 macOS XCTest 为 480 passed、0 failed、0 skipped；Xcode 记录 `ProcessExecutorTests` 一条 QoS 优先级反转运行时警告。
+
+Boring Notch `v2.7.3` 的静态源码在悬停延迟动作执行前重新核对取消状态与当前 UI 条件；这里采用的只是“异步证据要在改变状态前再次校验”的一般原则，未把它描述为 Boring Notch 的 Agent 生命周期行为，也未复制 GPL 源码。以上仅为本地状态机与 XCTest 证据；Vibe Island / Boring Notch 均未启动，真实 Hook 与安装后 UI 仍待独立验收。

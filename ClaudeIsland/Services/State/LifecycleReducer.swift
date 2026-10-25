@@ -230,6 +230,7 @@ nonisolated enum LifecycleTransitionReason: String, Equatable, Sendable {
     case sourceMissingBeyondGrace
     case creationNotAllowed
     case staleDiscovery
+    case implausibleFutureTimestamp
     case activeOlderThanHook
     case activeWithoutNewGeneration
     case completionOlderThanHook
@@ -300,6 +301,7 @@ nonisolated struct LifecycleTransition: Equatable, Sendable {
         switch reason {
         case .creationNotAllowed,
              .staleDiscovery,
+             .implausibleFutureTimestamp,
              .activeOlderThanHook,
              .activeWithoutNewGeneration,
              .completionOlderThanHook,
@@ -400,6 +402,10 @@ nonisolated struct LifecycleTraceEntry: Equatable, Sendable {
 }
 
 nonisolated enum LifecycleReducer {
+    /// Small clock skew is tolerated, but far-future evidence must not move a
+    /// lifecycle boundary ahead of the time the app received it.
+    private static let futureTimestampTolerance: TimeInterval = 5 * 60
+
     /// Keep a confirmed in-flight Codex call visible longer than an ordinary
     /// quiet turn, but still retire it if the host disappears without writing
     /// a result or terminal boundary.
@@ -412,6 +418,13 @@ nonisolated enum LifecycleReducer {
         activeStaleInterval: TimeInterval,
         missingGracePeriod: TimeInterval
     ) -> LifecycleTransition {
+        guard !hasImplausibleFutureTimestamp(in: observation) else {
+            return LifecycleTransition(
+                mutation: .none,
+                reason: .implausibleFutureTimestamp
+            )
+        }
+
         switch observation.evidence {
         case .active(let turnStartedAt, let lastEvidenceAt):
             let toolStartedAt: Date?
@@ -511,6 +524,40 @@ nonisolated enum LifecycleReducer {
                 current: current,
                 observation: observation
             )
+        }
+    }
+
+    private static func hasImplausibleFutureTimestamp(
+        in observation: SessionLifecycleObservation
+    ) -> Bool {
+        let receivedAt = observation.receivedAt
+        guard receivedAt.timeIntervalSince1970.isFinite else { return true }
+
+        let evidenceTimestamps: [Date?]
+        switch observation.evidence {
+        case .active(let turnStartedAt, let lastEvidenceAt):
+            evidenceTimestamps = [turnStartedAt, lastEvidenceAt]
+        case .activeTool(
+            let turnStartedAt,
+            let lastEvidenceAt,
+            let toolStartedAt
+        ):
+            evidenceTimestamps = [turnStartedAt, lastEvidenceAt, toolStartedAt]
+        case .completed(let timestamp),
+             .interrupted(let timestamp),
+             .failed(let timestamp):
+            evidenceTimestamps = [timestamp]
+        case .missing, .unknown, .hook, .interactionResolution, .interrupt,
+             .processExited:
+            evidenceTimestamps = []
+        }
+
+        return ([observation.observedAt] + evidenceTimestamps).contains { timestamp in
+            guard let timestamp else { return false }
+            let value = timestamp.timeIntervalSince1970
+            let skew = timestamp.timeIntervalSince(receivedAt)
+            return !value.isFinite || !skew.isFinite ||
+                skew > futureTimestampTolerance
         }
     }
 

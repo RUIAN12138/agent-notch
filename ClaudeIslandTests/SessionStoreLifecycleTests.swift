@@ -270,6 +270,38 @@ final class SessionStoreLifecycleTests: XCTestCase {
         XCTAssertNil(session.completedAt)
     }
 
+    func testFarFutureTranscriptTimestampCannotCompleteAnActiveTurn() async throws {
+        let store = SessionStore(persistenceEnabled: false, fileSyncEnabled: false)
+        let sessionId = "future-transcript-clock-\(UUID().uuidString)"
+        let now = Date()
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: now.addingTimeInterval(-2),
+            source: "claude"
+        )))
+        await store.process(.fileUpdated(FileUpdatePayload(
+            sessionId: sessionId,
+            cwd: "/tmp/agent-notch-state-tests",
+            messages: [message(
+                id: "future-clock-final",
+                role: .assistant,
+                timestamp: now.addingTimeInterval(6 * 60),
+                text: "completion timestamp is implausibly ahead"
+            )],
+            isIncremental: true,
+            completedToolIds: [],
+            toolResults: [:],
+            structuredResults: [:]
+        )))
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertEqual(session.phase, .processing)
+        XCTAssertNil(session.completedAt)
+    }
+
     func testOrderedLifecycleApprovalCompletionAndResume() async throws {
         let store = SessionStore(
             persistenceEnabled: false,
