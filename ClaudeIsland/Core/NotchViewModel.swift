@@ -437,6 +437,12 @@ class NotchViewModel: ObservableObject {
     func notchClose() {
         invalidatePointerTransition()
         presentationGeneration += 1
+        // These disclosures are shared outside the menu view, so collapse
+        // them explicitly when the panel closes. Their selected values live
+        // in the selectors/settings and are intentionally left untouched.
+        screenSelector.isPickerExpanded = false
+        soundSelector.isPickerExpanded = false
+        claudeDirSelector.isPickerExpanded = false
         // Save chat session before closing if in chat mode
         if case .chat(let session) = contentType {
             currentChatSession = session

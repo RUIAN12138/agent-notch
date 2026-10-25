@@ -73,6 +73,50 @@ final class NotchPointerInteractionTests: XCTestCase {
         XCTAssertEqual(model.status, .closed)
     }
 
+    func testClosingAndReopeningPanelKeepsSettingsPickersCollapsed() {
+        let model = makeViewModel(EventMonitors(startMonitors: false))
+        let screenSelector = ScreenSelector.shared
+        let soundSelector = SoundSelector.shared
+        let claudeDirSelector = ClaudeDirSelector.shared
+        let originalScreenMode = screenSelector.selectionMode
+        let originalScreenName = screenSelector.selectedScreen?.localizedName
+        let originalSound = AppSettings.notificationSound
+        let originalClaudeDirectory = AppSettings.claudeDirectoryName
+        let originalExpandedStates = (
+            screenSelector.isPickerExpanded,
+            soundSelector.isPickerExpanded,
+            claudeDirSelector.isPickerExpanded
+        )
+        defer {
+            screenSelector.isPickerExpanded = originalExpandedStates.0
+            soundSelector.isPickerExpanded = originalExpandedStates.1
+            claudeDirSelector.isPickerExpanded = originalExpandedStates.2
+        }
+
+        model.notchOpen(reason: .click)
+        model.contentType = .menu
+        screenSelector.isPickerExpanded = true
+        soundSelector.isPickerExpanded = true
+        claudeDirSelector.isPickerExpanded = true
+
+        model.notchClose()
+
+        XCTAssertEqual(model.status, .closed)
+        XCTAssertFalse(screenSelector.isPickerExpanded)
+        XCTAssertFalse(soundSelector.isPickerExpanded)
+        XCTAssertFalse(claudeDirSelector.isPickerExpanded)
+        XCTAssertEqual(screenSelector.selectionMode, originalScreenMode)
+        XCTAssertEqual(screenSelector.selectedScreen?.localizedName, originalScreenName)
+        XCTAssertEqual(AppSettings.notificationSound, originalSound)
+        XCTAssertEqual(AppSettings.claudeDirectoryName, originalClaudeDirectory)
+
+        model.notchOpen(reason: .click)
+        XCTAssertFalse(screenSelector.isPickerExpanded)
+        XCTAssertFalse(soundSelector.isPickerExpanded)
+        XCTAssertFalse(claudeDirSelector.isPickerExpanded)
+        model.notchClose()
+    }
+
     func testExcludedFullScreenSpaceRejectsOpensAndPreservesChatForReturn() async throws {
         let events = EventMonitors(startMonitors: false)
         let model = makeViewModel(events)

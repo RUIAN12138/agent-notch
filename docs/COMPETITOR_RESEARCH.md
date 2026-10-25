@@ -32,6 +32,12 @@ Vibe Island 资源 occurrence 的完整逻辑路径为 `VibeIsland.dmg/Vibe Isla
 - 迁移方式：只采纳“延迟任务必须可撤销、触发时再次验证当前状态”的交互原则，不复制其源码或可识别的界面表达。
 - 已落地：Agent Notch 在 `d769929` 为指针转换增加独立代次，覆盖重排、展开、收起、用户接管和审批弹出；旧回调即使在指针回到相同状态后执行也会失效。本轮进一步将默认悬停进入延迟设为 0.3 秒、离开收起延迟设为 0.2 秒，并把收起延迟下限开放到 0.1 秒；单独保存的用户值保持不变。相关代码与回归测试位于 `ClaudeIsland/Core/NotchViewModel.swift`、`ClaudeIsland/Core/Settings.swift`、`ClaudeIsland/UI/Views/NotchStudioSettingsView.swift` 和 `ClaudeIslandTests/NotchPointerInteractionTests.swift`。
 
+### 收起边界清理瞬态选择器（2026-10-25）
+
+Boring Notch `v2.7.3` 的 `BoringViewModel.close()` 会清理电量弹层、peek 预览和边缘自动展开等短命呈现状态（[官方源码，`close()`](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/boringNotch/models/BoringViewModel.swift#L183-L200)）。对照 Agent Notch，屏幕、声音和 Claude 目录选择器把 `isPickerExpanded` 存在共享 selector 中；菜单视图消失不会自动销毁这些状态，因此收起后再次打开可能仍展开旧 picker。
+
+Agent Notch 现在在统一 `notchClose()` 路径折叠这三个瞬态 picker，只清理呈现状态，不改动已保存的屏幕、声音或目录选择。`NotchPointerInteractionTests.testClosingAndReopeningPanelKeepsSettingsPickersCollapsed` 覆盖收起、再次打开和偏好保持。该结论依据上游源码与 Agent Notch 本地状态路径，测试不是已安装应用的桌面端到端验收。
+
 ### 录屏隐藏开关：能力参考与不采纳边界
 
 Boring Notch `v2.7.3` 的设置视图提供“Hide from screen recording”选项，`BoringNotchSkyLightWindow.swift` 会据此设置 `NSWindow.sharingType`。这是对应源码标签的静态观察，不等于发行包运行行为。Apple 当前文档把 `.none` 标为 legacy，并明确警告不要依赖它隐藏屏幕捕获中的内容；因此 Agent Notch 不会照搬该实现，也不会以此向用户承诺截图/录屏隐私。若未来要做类似偏好，必须先找到当前受支持且经真实系统捕获验证的机制；仅隐藏窗口或设置旧 API 不足以证明内容未被捕获。
