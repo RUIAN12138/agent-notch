@@ -106,6 +106,20 @@ struct NotchView: View {
         sessionMonitor.instances.contains { $0.phase.isWaitingForApproval }
     }
 
+    /// The setting is deliberately checked at the event boundary so a frontmost
+    /// terminal can suppress an automatic takeover without delaying lifecycle
+    /// updates or affecting manual panel opens.
+    private var shouldSuppressAutomaticExpansion: Bool {
+        let enabled = preferences.suppressAutoExpansionWhenTerminalFrontmost
+        let terminalIsFrontmost = enabled
+            ? TerminalVisibilityDetector.isTerminalFrontmost()
+            : false
+        return NotchAttentionPolicy.shouldSuppressAutomaticExpansion(
+            suppressWhenTerminalFrontmost: enabled,
+            terminalIsFrontmost: terminalIsFrontmost
+        )
+    }
+
     /// Whether any Claude session is waiting for user input (done/ready state) within the display window
     private var hasWaitingForInput: Bool {
         let now = Date()
@@ -942,10 +956,11 @@ struct NotchView: View {
             excluding: previousInteractionTokens,
             expandQuestionsAutomatically:
                 preferences.expandQuestionsAutomatically
-        ) {
+        ), !shouldSuppressAutomaticExpansion {
             // An approval is actionable only with its context visible. Open
             // the exact conversation even when a second request arrives for
-            // a session that was already waiting.
+            // a session that was already waiting. Terminal suppression keeps
+            // the request pending in the compact notch until it is opened.
             viewModel.showApproval(for: pendingSession)
         }
 
@@ -1034,7 +1049,10 @@ struct NotchView: View {
                     expandQuestionsAutomatically:
                         preferences.expandQuestionsAutomatically
                 )
+            let suppressAutomaticExpansion =
+                shouldSuppressAutomaticExpansion
             let shouldExpandForCompletion =
+                !suppressAutomaticExpansion &&
                 NotchAttentionPolicy.shouldAutoExpandOnCompletion(
                     expandOnTaskCompletion:
                         preferences.expandOnTaskCompletion,
@@ -1054,7 +1072,8 @@ struct NotchView: View {
                         startedAt: latestCompletion.completedAt
                     )
                 }
-            } else if NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
+            } else if !suppressAutomaticExpansion &&
+                NotchAttentionPolicy.shouldCollapseNotificationPanelAfterCompletion(
                 status: viewModel.status,
                 openReason: viewModel.openReason,
                 hasPendingAutoExpandedInteraction:
@@ -1168,6 +1187,15 @@ struct NotchView: View {
         previousSubagentCompletionTokens = nextTokens
 
         guard !presentableTokens.isEmpty else {
+            return
+        }
+
+        if shouldSuppressAutomaticExpansion {
+            // Team completion has no persistent compact badge of its own yet;
+            // keep the notch visible and reuse the existing brief attention
+            // cue rather than silently dropping the opted-in reminder.
+            isVisible = true
+            triggerAttentionBounce()
             return
         }
 

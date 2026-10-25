@@ -71,6 +71,13 @@ enum NotchSubagentCompletionDisposition: Equatable {
 }
 
 enum NotchAttentionPolicy {
+    static func shouldSuppressAutomaticExpansion(
+        suppressWhenTerminalFrontmost: Bool,
+        terminalIsFrontmost: Bool
+    ) -> Bool {
+        suppressWhenTerminalFrontmost && terminalIsFrontmost
+    }
+
     static func completionDwellRemaining(
         startedAt: Date,
         duration: TimeInterval,

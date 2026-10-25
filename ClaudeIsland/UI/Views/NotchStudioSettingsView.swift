@@ -699,6 +699,23 @@ struct NotchStudioSettingsView: View {
                     isOn: $preferences.expandQuestionsAutomatically
                 )
 
+                Divider()
+                settingToggle(
+                    t(
+                        "Keep the panel compact in terminals",
+                        "终端前台时保持提醒紧凑"
+                    ),
+                    detail: t(
+                        "When a supported terminal app is frontmost, do not automatically open the panel. Agent state keeps updating, and you can open the panel manually.",
+                        "受支持的终端应用位于前台时不自动展开面板；Agent 状态照常更新，你可以随时手动打开。"
+                    ),
+                    isOn:
+                        $preferences.suppressAutoExpansionWhenTerminalFrontmost
+                )
+                .accessibilityIdentifier(
+                    "settings.general.suppressAutoExpansionWhenTerminalFrontmost"
+                )
+
             }
         }
     }

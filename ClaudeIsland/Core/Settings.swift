@@ -229,6 +229,8 @@ final class NotchPreferences: ObservableObject {
         static let collapseDelay = "notchCollapseDelay"
         static let expandQuestionsAutomatically =
             "notchExpandQuestionsAutomatically"
+        static let suppressAutoExpansionWhenTerminalFrontmost =
+            "notchSuppressAutoExpansionWhenTerminalFrontmost"
         static let expandOnTaskCompletion = "notchExpandOnTaskCompletion"
         static let agentTeamCompletionTiming =
             "notchAgentTeamCompletionTiming"
@@ -293,6 +295,18 @@ final class NotchPreferences: ObservableObject {
             defaults.set(
                 expandQuestionsAutomatically,
                 forKey: Keys.expandQuestionsAutomatically
+            )
+        }
+    }
+
+    /// Keep event-driven panels compact while a supported terminal app is
+    /// frontmost. Lifecycle state and existing compact attention cues continue
+    /// updating; the user can always open the panel directly.
+    @Published var suppressAutoExpansionWhenTerminalFrontmost: Bool {
+        didSet {
+            defaults.set(
+                suppressAutoExpansionWhenTerminalFrontmost,
+                forKey: Keys.suppressAutoExpansionWhenTerminalFrontmost
             )
         }
     }
@@ -515,6 +529,10 @@ final class NotchPreferences: ObservableObject {
         expandQuestionsAutomatically =
             defaults.object(forKey: Keys.expandQuestionsAutomatically) as? Bool
             ?? true
+        suppressAutoExpansionWhenTerminalFrontmost =
+            defaults.object(
+                forKey: Keys.suppressAutoExpansionWhenTerminalFrontmost
+            ) as? Bool ?? false
         expandOnTaskCompletion =
             defaults.object(forKey: Keys.expandOnTaskCompletion) as? Bool
             ?? false

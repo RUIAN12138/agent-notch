@@ -32,6 +32,51 @@ final class NotchCompletionExpansionTests: XCTestCase {
         }
     }
 
+    func testTerminalAutoExpansionSuppressionPreferenceDefaultsOffAndPersists() throws {
+        let suite = "NotchTerminalAutoExpansionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let preferences = NotchPreferences(defaults: defaults)
+        XCTAssertFalse(preferences.suppressAutoExpansionWhenTerminalFrontmost)
+
+        for choice in [false, true] {
+            preferences.suppressAutoExpansionWhenTerminalFrontmost = choice
+            let restored = NotchPreferences(defaults: defaults)
+            XCTAssertEqual(
+                restored.suppressAutoExpansionWhenTerminalFrontmost,
+                choice
+            )
+            XCTAssertEqual(
+                defaults.object(
+                    forKey: "notchSuppressAutoExpansionWhenTerminalFrontmost"
+                ) as? Bool,
+                choice
+            )
+        }
+    }
+
+    func testTerminalAutoExpansionSuppressionRequiresEnabledPreferenceAndFrontmostTerminal() {
+        XCTAssertFalse(
+            NotchAttentionPolicy.shouldSuppressAutomaticExpansion(
+                suppressWhenTerminalFrontmost: false,
+                terminalIsFrontmost: true
+            )
+        )
+        XCTAssertFalse(
+            NotchAttentionPolicy.shouldSuppressAutomaticExpansion(
+                suppressWhenTerminalFrontmost: true,
+                terminalIsFrontmost: false
+            )
+        )
+        XCTAssertTrue(
+            NotchAttentionPolicy.shouldSuppressAutomaticExpansion(
+                suppressWhenTerminalFrontmost: true,
+                terminalIsFrontmost: true
+            )
+        )
+    }
+
     func testCompletionExpansionIsOptInAndRespectsPresentationOwnership() {
         func shouldExpand(
             enabled: Bool = true,
