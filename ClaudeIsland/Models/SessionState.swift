@@ -304,6 +304,9 @@ struct SessionState: Equatable, Identifiable, Sendable {
 /// context, but active work always owns the notch when the list gets busy.
 nonisolated enum SessionRetentionPolicy {
     static let completedLifetime: TimeInterval = 5 * 60 * 60
+    /// Briefly retain observer-only cards after the exact source PID exits so
+    /// an app restart/update can deliver a fresh hook without a visible gap.
+    static let observationOnlyProcessExitGracePeriod: TimeInterval = 2
     static let maximumVisibleCompleted = 1
     static let activeCrowdingThreshold = 2
     static let missingCodexGracePeriod: TimeInterval = 30

@@ -115,8 +115,19 @@ actor SessionStore {
     /// Pending file syncs (debounced)
     private var pendingSyncs: [String: Task<Void, Never>] = [:]
 
+    private struct PendingObserverExitCleanup {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+
+    /// Observer-only cards wait briefly after their tracked PID exits. A fresh
+    /// lifecycle hook cancels the removal, mirroring the cancellable delayed
+    /// work used by the notch's pointer transitions.
+    private var pendingObserverExitCleanups: [String: PendingObserverExitCleanup] = [:]
+
     /// Sync debounce interval (100ms)
     private let syncDebounceNs: UInt64 = 100_000_000
+    private let observerProcessExitGracePeriodNs: UInt64
 
     /// Initial discovery and subsequent periodic status checks share one task.
     private var statusCheckTask: Task<Void, Never>?
@@ -185,7 +196,9 @@ actor SessionStore {
         processTreeProvider: @escaping @Sendable (Bool) -> [Int: ProcessInfo] = {
             ProcessTreeBuilder.shared.buildTree(forceRefresh: $0)
         },
-        historySnapshotProvider: (@Sendable (String, String) async -> ConversationParser.HistoryParseResult)? = nil
+        historySnapshotProvider: (@Sendable (String, String) async -> ConversationParser.HistoryParseResult)? = nil,
+        observerProcessExitGracePeriod: TimeInterval =
+            SessionRetentionPolicy.observationOnlyProcessExitGracePeriod
     ) {
         self.persistenceEnabled = persistenceEnabled
         self.fileSyncEnabled = fileSyncEnabled
@@ -198,6 +211,12 @@ actor SessionStore {
         self.permissionCanceller = permissionCanceller
         self.processTreeProvider = processTreeProvider
         self.historySnapshotProvider = historySnapshotProvider
+        let boundedGracePeriod = observerProcessExitGracePeriod.isFinite
+            ? min(max(observerProcessExitGracePeriod, 0), 30)
+            : SessionRetentionPolicy.observationOnlyProcessExitGracePeriod
+        self.observerProcessExitGracePeriodNs = UInt64(
+            boundedGracePeriod * 1_000_000_000
+        )
     }
 
     // MARK: - Event Processing
@@ -326,6 +345,7 @@ actor SessionStore {
             cwd: event.cwd,
             projectName: eventProjectName
         ) {
+            cancelPendingObserverExitCleanup(sessionId: sessionId)
             sessions.removeValue(forKey: sessionId)
             cancelPendingSync(sessionId: sessionId)
             await cleanupExternalLifecycle(sessionId: sessionId, completedAt: observedAt)
@@ -428,6 +448,7 @@ actor SessionStore {
             case .create(let snapshot), .update(let snapshot):
                 snapshot.applying(to: &session)
             case .remove:
+                cancelPendingObserverExitCleanup(sessionId: sessionId)
                 sessions.removeValue(forKey: sessionId)
                 cancelPendingSync(sessionId: sessionId)
                 recordRemovedSessionBoundary(sessionId, at: observedAt)
@@ -441,6 +462,7 @@ actor SessionStore {
             }
 
             if shouldApplyLifecycle {
+                cancelPendingObserverExitCleanup(sessionId: sessionId)
                 // Only clear the durable removal boundary once the source has
                 // actually supplied a fresh lifecycle transition. A newer
                 // PreToolUse is valid mid-turn evidence when the app starts
@@ -1772,6 +1794,7 @@ actor SessionStore {
         )
         switch transition.mutation {
         case .remove:
+            cancelPendingObserverExitCleanup(sessionId: sessionId)
             sessions.removeValue(forKey: sessionId)
             cancelPendingSync(sessionId: sessionId)
             recordRemovedSessionBoundary(sessionId, at: observedAt)
@@ -1783,15 +1806,108 @@ actor SessionStore {
 
         case .update(let snapshot):
             snapshot.applying(to: &session)
+            let shouldDeferRemoval =
+                transition.reason == .observationSourceProcessExited
+            if shouldDeferRemoval {
+                // Record the event boundary immediately, even while the
+                // terminal card remains visible during the restart grace.
+                // Old hooks stay rejected; only a newer lifecycle hook can
+                // cancel cleanup and clear the tombstone.
+                recordRemovedSessionBoundary(sessionId, at: observedAt)
+            }
+
+            session.pid = nil
+            finalizeDanglingTools(
+                in: &session,
+                terminalAt: session.completedAt ?? observedAt
+            )
+            sessions[sessionId] = session
+            cancelPendingSync(sessionId: sessionId)
+            if shouldDeferRemoval {
+                // Persist the ended row before the boundary so a crash during
+                // external cleanup cannot restore an older active snapshot.
+                publishState()
+            }
+            await cleanupExternalLifecycle(
+                sessionId: sessionId,
+                completedAt: observedAt
+            )
+            if shouldDeferRemoval {
+                scheduleObserverExitCleanup(
+                    sessionId: sessionId,
+                    exitedAt: observedAt
+                )
+            }
+            return
 
         case .create, .none:
             return
         }
-        session.pid = nil
-        finalizeDanglingTools(in: &session, terminalAt: session.completedAt ?? observedAt)
-        sessions[sessionId] = session
+    }
+
+    private func scheduleObserverExitCleanup(
+        sessionId: String,
+        exitedAt: Date
+    ) {
+        guard let session = sessions[sessionId],
+              session.phase == .ended,
+              session.pid == nil,
+              session.completedAt == exitedAt,
+              removedSessionBoundaries[sessionId] == exitedAt else {
+            return
+        }
+
+        cancelPendingObserverExitCleanup(sessionId: sessionId)
+        let token = UUID()
+        let delay = max(1, observerProcessExitGracePeriodNs)
+        let task = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.finishObserverExitCleanup(
+                sessionId: sessionId,
+                exitedAt: exitedAt,
+                token: token
+            )
+        }
+        pendingObserverExitCleanups[sessionId] = PendingObserverExitCleanup(
+            token: token,
+            task: task
+        )
+    }
+
+    private func cancelPendingObserverExitCleanup(sessionId: String) {
+        pendingObserverExitCleanups
+            .removeValue(forKey: sessionId)?
+            .task
+            .cancel()
+    }
+
+    private func finishObserverExitCleanup(
+        sessionId: String,
+        exitedAt: Date,
+        token: UUID
+    ) {
+        guard pendingObserverExitCleanups[sessionId]?.token == token else {
+            return
+        }
+        pendingObserverExitCleanups.removeValue(forKey: sessionId)
+        guard let session = sessions[sessionId],
+              session.phase == .ended,
+              session.pid == nil,
+              session.completedAt == exitedAt,
+              removedSessionBoundaries[sessionId] == exitedAt else {
+            return
+        }
+
+        sessions.removeValue(forKey: sessionId)
         cancelPendingSync(sessionId: sessionId)
-        await cleanupExternalLifecycle(sessionId: sessionId, completedAt: observedAt)
+        // The tombstone recorded at process exit remains in place so stale
+        // persisted and Bridge snapshots cannot resurrect this card.
+        publishState()
     }
 
     // MARK: - Clear Processing
@@ -1815,6 +1931,7 @@ actor SessionStore {
 
     private func processSessionEnd(sessionId: String) async {
         let completedAt = Date()
+        cancelPendingObserverExitCleanup(sessionId: sessionId)
         sessions.removeValue(forKey: sessionId)
         cancelPendingSync(sessionId: sessionId)
         await cleanupExternalLifecycle(sessionId: sessionId, completedAt: completedAt)
@@ -2274,6 +2391,7 @@ actor SessionStore {
                 cwd: session.cwd,
                 projectName: session.projectName
             ) {
+                cancelPendingObserverExitCleanup(sessionId: sessionId)
                 sessions.removeValue(forKey: sessionId)
                 cancelPendingSync(sessionId: sessionId)
                 stateChanged = true
@@ -2326,8 +2444,23 @@ actor SessionStore {
                 if let completedAt = session.completedAt,
                    now.timeIntervalSince(completedAt) >=
                     SessionRetentionPolicy.completedLifetime {
+                    cancelPendingObserverExitCleanup(sessionId: sessionId)
                     sessions.removeValue(forKey: sessionId)
                     cancelPendingSync(sessionId: sessionId)
+                    stateChanged = true
+                    continue
+                }
+                // A source may emit SessionStart during an app update without
+                // beginning a new turn. Keep tracking its new PID so a later
+                // quit still enters the same short cleanup path.
+                if (session.source.isCustom || session.source == .gemini),
+                   let pid = session.pid,
+                   !isProcessRunning(pid: pid) {
+                    await processProcessExit(
+                        sessionId: sessionId,
+                        pid: pid,
+                        observedAt: now
+                    )
                     stateChanged = true
                 }
                 continue

@@ -1278,8 +1278,8 @@ nonisolated enum LifecycleReducer {
     }
 
     /// SessionStore validates the exact PID before sending this observation.
-    /// Interactive sources retain a terminal card; observation-only agents
-    /// have no conversation surface to return to, so their card is removed.
+    /// Interactive sources retain their terminal card; observation-only agents
+    /// enter a terminal state and are removed after a short restart grace.
     private static func reduceProcessExit(
         current: SessionLifecycleSnapshot?,
         observation: SessionLifecycleObservation
@@ -1290,13 +1290,8 @@ nonisolated enum LifecycleReducer {
                 reason: .sessionNotFound
             )
         }
-        if observation.source.isCustom ||
-            observation.source == .gemini {
-            return LifecycleTransition(
-                mutation: .remove,
-                reason: .observationSourceProcessExited
-            )
-        }
+        let isObservationOnlySource = observation.source.isCustom ||
+            observation.source == .gemini
         let previous = next
         next.phase = .ended
         next.lastActivity = max(next.lastActivity, observation.observedAt)
@@ -1318,7 +1313,9 @@ nonisolated enum LifecycleReducer {
         }
         return LifecycleTransition(
             mutation: .update(next),
-            reason: .processExitAccepted
+            reason: isObservationOnlySource
+                ? .observationSourceProcessExited
+                : .processExitAccepted
         )
     }
 }

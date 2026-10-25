@@ -279,3 +279,13 @@ Vibe Island `1.0.55` 官方更新日志称，自定义 Agent 的卡片会在其�
 Agent Notch 已能通过现有进程检查器发现 Hook 所属 PID 退出，但此前无论来源是否具备消息/会话交互能力，都会统一转成 `ended` 并保留最近终态卡片最长 5 小时。对自定义 observer 和 Gemini 来说，进程退出意味着没有可返回的本地会话控制面，继续显示 Working/Ended 卡片会误导用户。现复用既有 `LifecycleReducer`、进程身份校验和跨重启移除边界：仅自定义来源与 Gemini 在精确 PID 退出后移除卡片；写入移除时间边界以拒绝更早的迟到 Hook，并允许严格更新的同会话活动事件恢复。Claude、Codex、CodeBuddy、Cursor 等交互型来源仍保留原有终态卡片。
 
 定向 XCTest 先在旧策略下复现回归，修复后覆盖 observer/Gemini 的移除裁决、自定义卡片删除、迟到 Hook 拒绝、较新 Hook 重启恢复，以及内置 Codex 仍保留 ended 状态。这是根据 Vibe Island 公布的产品结果做的独立生命周期决策，不声称复刻其内部实现；自动化结果也不代替真实外部 Agent 退出与已安装 UI 验收。
+
+### 观察型 Agent 更新重启期间的卡片连续性（2026-10-25）
+
+Vibe Island `1.0.53` 官方更新说明称，Agent 应用退出后卡片会在短暂延迟后清理，同时在应用为更新而重启时尽量不让卡片消失；`1.0.55` 又明确提到自定义 Agent 卡片随来源应用退出清理。[官方更新日志](https://vibeisland.app/changelog/)。这是厂商公开描述，不是其内部实现或本机运行观察。
+
+Boring Notch `v2.7.3` 的公开源码 `ContentView.handleHover` 会先取消旧延迟任务，触发前再检查取消状态、悬停状态和当前视图状态。[对应源码](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/boringNotch/ContentView.swift)。这是对 Boring 源码的静态观察；将同一“延迟工作可撤销、执行前复核身份和状态”的原则用于卡片清理，是 Agent Notch 的独立设计选择，不表示 Boring Notch 用此机制管理 Agent 卡片。
+
+对照 Agent Notch，观察型来源在精确 PID 退出的第一次轮询就会立即删卡，无法容忍更新重启期间短暂的 PID 空窗。现改为先把卡片裁决为 `ended` 并记录移除时间边界，等待 2 秒后再清理；同一会话在边界之后到达的有效生命周期 Hook 会取消待清理任务、清除边界并按新事件恢复状态，边界之前的迟到 Hook 仍被拒绝。若应用确实退出且没有新生命周期证据，卡片在短暂 grace 后消失；时间边界继续阻止旧持久化快照或 Bridge 快照复活会话。
+
+回归覆盖 reducer 对自定义来源/Gemini 的 ended 裁决、进程退出后仍保留 ended 卡片、迟到事件不能取消清理、超时后删除，以及新 `PreToolUse` 在 grace 内到达时撤销删除并保持新 PID 的 processing 状态。该验证是本地状态机/XCTest 证据，未启动 Vibe Island 或 Boring Notch，也未验证真实更新重启过程和桌面 UI。

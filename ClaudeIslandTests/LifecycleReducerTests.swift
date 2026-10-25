@@ -1267,7 +1267,7 @@ final class LifecycleReducerTests: XCTestCase {
         XCTAssertEqual(next.completedAt, exitedAt)
     }
 
-    func testObservationOnlyProcessExitRemovesSession() throws {
+    func testObservationOnlyProcessExitEndsSessionBeforeDeferredRemoval() throws {
         let exitedAt = Date(timeIntervalSince1970: 22_100)
         let sources = [
             try XCTUnwrap(AgentSource(rawValue: "custom-coder")),
@@ -1292,9 +1292,11 @@ final class LifecycleReducerTests: XCTestCase {
             XCTAssertEqual(
                 transition.reason,
                 .observationSourceProcessExited,
-                "Expected \(source.rawValue) process exit to remove its card"
+                "Expected \(source.rawValue) process exit to enter a terminal state"
             )
-            XCTAssertEqual(transition.mutation, .remove)
+            let next = try XCTUnwrap(transition.nextSnapshot)
+            XCTAssertEqual(next.phase, .ended)
+            XCTAssertEqual(next.completedAt, exitedAt)
         }
     }
 
