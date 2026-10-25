@@ -78,9 +78,11 @@ Agent Notch 据此新增默认关闭的“任务完成时展开”选项。开�
 
 ### 终端前台时抑制自动展开
 
-Vibe Island 的本地化帮助文案写明：Agent 所在的终端标签页处于前台时，不自动展开面板。Agent Notch 借鉴这一注意力原则，新增默认关闭的“终端前台时保持提醒紧凑”选项：新审批/问题、根任务完成和已启用的子 Agent 完成事件仍按原路径更新状态；满足抑制条件时不自动接管展开面板，用户仍可手动打开。子 Agent 完成没有独立的常驻紧凑徽标，因此在抑制展开时只保留小刘海可见并复用现有短暂注意力反馈。
+Vibe Island 的本地化帮助文案写明：Agent 所在的终端标签页处于前台时，不自动展开面板。Agent Notch 借鉴这一注意力原则，新增默认关闭的“终端前台时保持提醒紧凑”选项：新审批/问题、根任务完成和已启用的子 Agent 完成事件仍按原路径更新状态；满足抑制条件时不自动接管展开面板，用户仍可手动打开。已启用的子 Agent 完成会在小刘海保留绿色勾号，直到“完成后停留”期限结束；审批和仍在运行的 Agent 状态优先于该完成提示。提示只使用现有静态图标，不增加常驻动画，并尊重减少动态效果设置。
 
 本地实现使用既有 `TerminalVisibilityDetector.isTerminalFrontmost()`，判断受支持的终端应用是否位于前台；它没有判断“具体哪个 Agent 标签页”或 tmux pane 是否聚焦。因此这是有意较宽的本地策略，不是对 Vibe Island 精确会话匹配行为的复刻或运行时推断。新增测试覆盖偏好默认值/持久化与 enabled × terminal-frontmost 策略组合；定向 XCTest 为 7 passed，完整 macOS XCTest 为 483 passed / 0 failed / 0 skipped。Xcode 另报告 `ProcessExecutorTests.swift` 与 `SessionStoreLifecycleTests.swift` 的 QoS 优先级反转运行时警告；这些结果是本地自动化测试，不是安装后桌面 UI 验收。竞品仍只做静态分析，未启动。
+
+子 Agent 完成提示随后补上了持久的紧凑态勾号：从 Hook 的真实完成时间开始计算现有停留期限；更晚的新完成会顺延期限，偏好时长变化和视图重新出现会重设可取消计时器。待处理审批和仍在运行的 Agent 指示优先；没有加入新的循环动效。新增截止边界回归后，`SubagentCompletionAttentionTests` 为 18 passed，完整 macOS XCTest 为 484 passed / 0 failed / 0 skipped。完整套件报告一条来自 `ProcessExecutorTests.swift` 的 QoS 优先级反转运行时警告；仍未进行安装后 GUI 验收，竞品仍只做静态分析。
 
 ## 完成提醒过期与待处理交互竞争
 

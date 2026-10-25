@@ -48,6 +48,8 @@ private final class NotchDelayedUIWork: ObservableObject {
     var completionPanelCollapseTask: Task<Void, Never>?
     var completionPanelCollapseStartedAt: Date?
     var completionPanelCollapseGeneration: UInt64 = 0
+    var subagentCompletionVisibilityTask: Task<Void, Never>?
+    var subagentCompletionVisibilityGeneration: UInt64 = 0
     var followUpDeliveryTask: Task<Void, Never>?
     var completionVisibilityTasks: [String: Task<Void, Never>] = [:]
 
@@ -62,6 +64,9 @@ private final class NotchDelayedUIWork: ObservableObject {
         completionPanelCollapseTask = nil
         completionPanelCollapseStartedAt = nil
         completionPanelCollapseGeneration &+= 1
+        subagentCompletionVisibilityTask?.cancel()
+        subagentCompletionVisibilityTask = nil
+        subagentCompletionVisibilityGeneration &+= 1
         followUpDeliveryTask?.cancel()
         followUpDeliveryTask = nil
         completionVisibilityTasks.values.forEach { $0.cancel() }
@@ -86,6 +91,7 @@ struct NotchView: View {
     @State private var previousSubagentCompletionTokens:
         [String: NotchSubagentCompletionToken] = [:]
     @State private var completionVisibilityStartedAt: [String: Date] = [:]
+    @State private var subagentCompletionVisibilityStartedAt: Date?
     @State private var attentionTrackingStartedAt = Date()
     @State private var isVisible: Bool = false
     @State private var isHovering: Bool = false
@@ -136,6 +142,15 @@ struct NotchView: View {
         }
     }
 
+    /// A teammate completion remains visible in the compact notch for the
+    /// configured dwell, even after its notification-owned panel collapses.
+    private var hasRecentSubagentCompletion: Bool {
+        NotchAttentionPolicy.shouldShowCompactSubagentCompletion(
+            startedAt: subagentCompletionVisibilityStartedAt,
+            duration: preferences.completionCompactDuration
+        )
+    }
+
     private var compactTaskCount: Int {
         sessionMonitor.instances.filter {
             $0.completedAt == nil &&
@@ -176,7 +191,8 @@ struct NotchView: View {
             size: notchSize,
             activityVisible: isAnyProcessing,
             permissionVisible: hasPendingPermission,
-            completionVisible: hasWaitingForInput,
+            completionVisible:
+                hasWaitingForInput || hasRecentSubagentCompletion,
             compactStyle: preferences.compactStyle,
             compactWidth: preferences.compactWidth
         )
@@ -208,7 +224,7 @@ struct NotchView: View {
         }
 
         // Waiting for input just shows checkmark on right, no extra left indicator
-        if hasWaitingForInput {
+        if hasWaitingForInput || hasRecentSubagentCompletion {
             return compactBaseWidth
         }
 
@@ -380,6 +396,7 @@ struct NotchView: View {
             }
             quietHoursMonitor.configure(quietHoursSchedule)
             seedAgentTeamCompletionTokens(sessionMonitor.instances)
+            rescheduleSubagentCompletionVisibilityExpiry()
             sessionMonitor.startMonitoring()
             viewModel.updateVisibleSessionCount(sessionMonitor.instances.count)
             updateIdleVisibility()
@@ -410,6 +427,7 @@ struct NotchView: View {
         }
         .onChange(of: preferences.completionCompactDuration) { _, _ in
             rescheduleCompletionVisibilityExpiries()
+            rescheduleSubagentCompletionVisibilityExpiry()
             rescheduleCompletionPanelCollapse()
         }
         .onChange(of: preferences.followUpRemindersEnabled) { _, _ in
@@ -454,6 +472,7 @@ struct NotchView: View {
         isProcessing ||
             hasPendingPermission ||
             hasWaitingForInput ||
+            hasRecentSubagentCompletion ||
             preferences.idleBehavior == .alwaysVisible
     }
 
@@ -586,7 +605,8 @@ struct NotchView: View {
                                 in: activityNamespace,
                                 isSource: showClosedActivity
                             )
-                    } else if hasWaitingForInput {
+                    } else if hasWaitingForInput ||
+                                hasRecentSubagentCompletion {
                         ReadyForInputIndicatorIcon(
                             size: 9 * compactAnimationScale,
                             color: TerminalColors.green
@@ -605,6 +625,16 @@ struct NotchView: View {
                             id: "spinner",
                             in: activityNamespace,
                             isSource: showClosedActivity
+                        )
+                        .accessibilityLabel(
+                            preferences.language.text(
+                                hasWaitingForInput
+                                    ? "Waiting for input"
+                                    : "Teammate task completed",
+                                hasWaitingForInput
+                                    ? "等待输入"
+                                    : "子 Agent 任务已完成"
+                            )
                         )
                     } else {
                         IdlePixelIndicatorIcon(
@@ -809,10 +839,21 @@ struct NotchView: View {
                         PixelLoaderIcon(
                             size: CompactNotchMetrics.openedAnimationSize
                         )
-                    } else if hasWaitingForInput {
+                    } else if hasWaitingForInput ||
+                                hasRecentSubagentCompletion {
                         ReadyForInputIndicatorIcon(
                             size: 20,
                             color: TerminalColors.green
+                        )
+                        .accessibilityLabel(
+                            preferences.language.text(
+                                hasWaitingForInput
+                                    ? "Waiting for input"
+                                    : "Teammate task completed",
+                                hasWaitingForInput
+                                    ? "等待输入"
+                                    : "子 Agent 任务已完成"
+                            )
                         )
                     } else {
                         IdlePixelIndicatorIcon(size: 20)
@@ -875,6 +916,7 @@ struct NotchView: View {
         } else if !isAnyProcessing &&
                   !hasPendingPermission &&
                   !hasWaitingForInput &&
+                  !hasRecentSubagentCompletion &&
                   viewModel.status == .closed {
             isVisible = false
         }
@@ -887,10 +929,11 @@ struct NotchView: View {
             // Show claude activity when processing or waiting for permission
             activityCoordinator.showActivity(type: .claude)
             isVisible = true
-        } else if hasWaitingForInput {
+        } else if hasWaitingForInput || hasRecentSubagentCompletion {
             delayedUIWork.visibilityTask?.cancel()
             delayedUIWork.visibilityTask = nil
-            // Keep visible for waiting-for-input but hide the processing spinner
+            // Keep the compact completion cue visible without a processing
+            // spinner.
             activityCoordinator.hideActivity()
             isVisible = true
         } else {
@@ -1190,10 +1233,11 @@ struct NotchView: View {
             return
         }
 
+        updateCompactSubagentCompletionCue(from: presentableTokens)
+
         if shouldSuppressAutomaticExpansion {
-            // Team completion has no persistent compact badge of its own yet;
-            // keep the notch visible and reuse the existing brief attention
-            // cue rather than silently dropping the opted-in reminder.
+            // Keep the opted-in completion reminder visible without taking
+            // over the terminal's frontmost workspace.
             isVisible = true
             triggerAttentionBounce()
             return
@@ -1259,6 +1303,72 @@ struct NotchView: View {
             delayedUIWork.completionVisibilityTasks.removeValue(
                 forKey: sessionId
             )
+            handleProcessingChange()
+            updateIdleVisibility()
+        }
+    }
+
+    private func updateCompactSubagentCompletionCue(
+        from tokens: [NotchSubagentCompletionToken]
+    ) {
+        guard let latestCompletion = tokens.max(by: {
+            $0.completedAt < $1.completedAt
+        }) else {
+            return
+        }
+
+        if let currentStartedAt = subagentCompletionVisibilityStartedAt,
+           currentStartedAt > latestCompletion.completedAt {
+            return
+        }
+
+        subagentCompletionVisibilityStartedAt = latestCompletion.completedAt
+        scheduleSubagentCompletionVisibilityExpiry(
+            startedAt: latestCompletion.completedAt
+        )
+    }
+
+    private func rescheduleSubagentCompletionVisibilityExpiry() {
+        guard let startedAt = subagentCompletionVisibilityStartedAt else {
+            delayedUIWork.subagentCompletionVisibilityTask?.cancel()
+            delayedUIWork.subagentCompletionVisibilityTask = nil
+            delayedUIWork.subagentCompletionVisibilityGeneration &+= 1
+            return
+        }
+        scheduleSubagentCompletionVisibilityExpiry(startedAt: startedAt)
+    }
+
+    private func scheduleSubagentCompletionVisibilityExpiry(
+        startedAt: Date
+    ) {
+        delayedUIWork.subagentCompletionVisibilityTask?.cancel()
+        delayedUIWork.subagentCompletionVisibilityGeneration &+= 1
+        let generation = delayedUIWork.subagentCompletionVisibilityGeneration
+        let remaining = NotchAttentionPolicy.completionDwellRemaining(
+            startedAt: startedAt,
+            duration: preferences.completionCompactDuration
+        )
+
+        guard remaining > 0 else {
+            if subagentCompletionVisibilityStartedAt == startedAt {
+                subagentCompletionVisibilityStartedAt = nil
+            }
+            delayedUIWork.subagentCompletionVisibilityTask = nil
+            handleProcessingChange()
+            updateIdleVisibility()
+            return
+        }
+
+        delayedUIWork.subagentCompletionVisibilityTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(remaining))
+            guard !Task.isCancelled,
+                  delayedUIWork.subagentCompletionVisibilityGeneration ==
+                    generation,
+                  subagentCompletionVisibilityStartedAt == startedAt else {
+                return
+            }
+            subagentCompletionVisibilityStartedAt = nil
+            delayedUIWork.subagentCompletionVisibilityTask = nil
             handleProcessingChange()
             updateIdleVisibility()
         }
@@ -1559,7 +1669,8 @@ struct NotchView: View {
             if viewModel.status == .closed &&
                !isAnyProcessing &&
                !hasPendingPermission &&
-               !hasWaitingForInput {
+               !hasWaitingForInput &&
+               !hasRecentSubagentCompletion {
                 isVisible = false
             }
         }

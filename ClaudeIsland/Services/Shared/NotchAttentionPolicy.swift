@@ -86,6 +86,19 @@ enum NotchAttentionPolicy {
         max(0, startedAt.addingTimeInterval(duration).timeIntervalSince(now))
     }
 
+    static func shouldShowCompactSubagentCompletion(
+        startedAt: Date?,
+        duration: TimeInterval,
+        now: Date = Date()
+    ) -> Bool {
+        guard let startedAt else { return false }
+        return completionDwellRemaining(
+            startedAt: startedAt,
+            duration: duration,
+            now: now
+        ) > 0
+    }
+
     static func shouldAutoExpandOnCompletion(
         expandOnTaskCompletion: Bool,
         status: NotchStatus,

@@ -221,6 +221,39 @@ final class SubagentCompletionAttentionTests: XCTestCase {
         XCTAssertEqual(session.subagentCompletionGeneration, 1)
     }
 
+    func testCompactSubagentCompletionCueExpiresAtConfiguredDwellDeadline() {
+        let completedAt = Date(timeIntervalSince1970: 200)
+
+        XCTAssertFalse(
+            NotchAttentionPolicy.shouldShowCompactSubagentCompletion(
+                startedAt: nil,
+                duration: 8,
+                now: completedAt
+            )
+        )
+        XCTAssertTrue(
+            NotchAttentionPolicy.shouldShowCompactSubagentCompletion(
+                startedAt: completedAt,
+                duration: 8,
+                now: completedAt.addingTimeInterval(7.999)
+            )
+        )
+        XCTAssertFalse(
+            NotchAttentionPolicy.shouldShowCompactSubagentCompletion(
+                startedAt: completedAt,
+                duration: 8,
+                now: completedAt.addingTimeInterval(8)
+            )
+        )
+        XCTAssertFalse(
+            NotchAttentionPolicy.shouldShowCompactSubagentCompletion(
+                startedAt: completedAt,
+                duration: 8,
+                now: completedAt.addingTimeInterval(9)
+            )
+        )
+    }
+
     func testTrackedAgentsOnlySignalAllFinishedAfterTheLastMatchingStop() {
         var state = SubagentHookState()
         state.observeStart(agentID: "agent-a", at: 10)
