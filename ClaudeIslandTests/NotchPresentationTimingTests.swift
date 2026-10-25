@@ -19,6 +19,39 @@ final class NotchPresentationTimingTests: XCTestCase {
         )
     }
 
+    func testNotchMotionUsesInterruptibleSpringAndQuickerCloseProfile() {
+        XCTAssertEqual(
+            NotchMotionPolicy.opening.response,
+            0.38,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchMotionPolicy.opening.dampingFraction,
+            0.8,
+            accuracy: 0.001
+        )
+        XCTAssertLessThan(
+            NotchMotionPolicy.closing.response,
+            NotchMotionPolicy.opening.response
+        )
+        XCTAssertEqual(NotchMotionPolicy.closing.response, 0.30, accuracy: 0.001)
+        XCTAssertEqual(
+            NotchMotionPolicy.closing.dampingFraction,
+            0.9,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchMotionPolicy.opening.reducedMotionDuration,
+            0.12,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchMotionPolicy.closing.reducedMotionDuration,
+            0.10,
+            accuracy: 0.001
+        )
+    }
+
     func testDeferredHoverCannotReplaceAlreadyOpenedClickPresentation() async {
         XCTAssertFalse(
             NotchViewModel.shouldPerformDeferredHoverOpen(

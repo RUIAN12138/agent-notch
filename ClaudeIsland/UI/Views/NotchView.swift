@@ -245,15 +245,11 @@ struct NotchView: View {
 
     // Animation springs
     private var openAnimation: Animation {
-        reduceMotion
-            ? .easeOut(duration: 0.12)
-            : .spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
+        NotchMotionPolicy.opening.animation(reduceMotion: reduceMotion)
     }
 
     private var closeAnimation: Animation {
-        reduceMotion
-            ? .easeOut(duration: 0.1)
-            : .spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)
+        NotchMotionPolicy.closing.animation(reduceMotion: reduceMotion)
     }
 
     private var contentTransition: AnyTransition {
@@ -347,9 +343,9 @@ struct NotchView: View {
                     }
                     .onHover { hovering in
                         withAnimation(
-                            reduceMotion
-                                ? .easeOut(duration: 0.1)
-                                : .spring(response: 0.38, dampingFraction: 0.8)
+                            NotchMotionPolicy.opening.animation(
+                                reduceMotion: reduceMotion
+                            )
                         ) {
                             isHovering = hovering
                         }

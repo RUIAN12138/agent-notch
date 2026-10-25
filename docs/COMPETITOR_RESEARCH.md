@@ -141,6 +141,7 @@ Agent Notch 原先把 `turn_aborted`、`task_aborted`、`task_cancelled`、`task
 ## 采用、暂缓与未验证项
 
 - **已采用**：Boring Notch 的可撤销 hover 时序原则已独立实现；其 0.3 秒进入等待和 100ms 退出复核启发了 Agent Notch 的新默认值（0.3 秒进入、0.2 秒退出），同时保留 Agent Notch 自己的指针代次防竞态与扩大后的几何命中边界。
+- **转场手感继续对齐**：Boring Notch `v2.7.3` 的 `ContentView.swift` 对展开/收起及悬停使用同一 `interactiveSpring(response: 0.38, dampingFraction: 0.8)`。Agent Notch 原先展开与收起分别使用普通 spring（0.42/0.8 与 0.45/1.0），反向状态变化时的速度衔接不一致。现把展开与悬停改为可中断的 0.38/0.8 interactive spring，收起使用更快且较少回弹的 0.30/0.9；reduce motion 仍分别保留 0.12s / 0.10s 的 ease-out。相关 policy 测试只验证配置合同，未做已安装应用的桌面帧率或主观观感验收；这是独立重实现交互原则，不复制 GPL 源码。
 - **已修复**：完成事件不再误收起仍有自动展开资格的审批/提问面板；依据是 Agent Notch 源码复现与回归测试，不声称这是 Vibe Island 私有实现的逆向结论。
 - **新增可选策略**：Vibe Island 安装包静态资源展示根任务与 Team 队友完成自动展开，以及三种子 Agent 通知时机；Agent Notch 已实现默认关闭的根任务完成和队友完成展开，并复用既有停留时长自动收起，保留审批、用户所有权和全屏策略优先级。基于 Claude Hook 的精确 `agent_id`，队友提醒已支持“每个子 Agent / 全部完成后 / 主 Agent 回复时”三种时机；有效的本轮活动子 Agent 即使在根 Agent 已结束响应后才完成，也只生成队友提醒，不复活根会话状态。
 - **候选但暂缓**：Vibe Island 的平台化 RemoteAgent manifest 与版本/散列清单可作为未来分发设计参考；当前不引入 SSH/远程执行能力，避免在核心状态与审批可靠性尚需真实运行验收时扩张权限面。
