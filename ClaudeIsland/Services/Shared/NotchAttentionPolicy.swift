@@ -73,6 +73,7 @@ enum NotchSubagentCompletionDisposition: Equatable {
 enum NotchAttentionPresentationState: Equatable {
     case permission
     case processing
+    case approvalRecovery
     case completion
     case idle
 }
@@ -81,10 +82,12 @@ enum NotchAttentionPolicy {
     static func presentationState(
         hasPendingPermission: Bool,
         isProcessing: Bool,
+        hasApprovalRecoveryNotice: Bool = false,
         hasCompletion: Bool
     ) -> NotchAttentionPresentationState {
         if hasPendingPermission { return .permission }
         if isProcessing { return .processing }
+        if hasApprovalRecoveryNotice { return .approvalRecovery }
         if hasCompletion { return .completion }
         return .idle
     }

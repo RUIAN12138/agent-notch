@@ -37,6 +37,7 @@ actor SessionStore {
         let lastActivity: Date
         let createdAt: Date
         let lastHookEventAt: Date?
+        let recoveredApprovalAt: Date?
         let lastCodexTurnStartedAt: Date?
         let completedAt: Date?
         let completionWasStaleTimeout: Bool?
@@ -74,6 +75,7 @@ actor SessionStore {
                 lastActivity: clampedDate(lastActivity) ?? now,
                 createdAt: clampedDate(createdAt) ?? now,
                 lastHookEventAt: clampedDate(lastHookEventAt),
+                recoveredApprovalAt: clampedDate(recoveredApprovalAt),
                 lastCodexTurnStartedAt: clampedDate(lastCodexTurnStartedAt),
                 completedAt: clampedDate(completedAt),
                 completionWasStaleTimeout: completionWasStaleTimeout,
@@ -2868,6 +2870,7 @@ actor SessionStore {
                 lastActivity: session.lastActivity,
                 createdAt: session.createdAt,
                 lastHookEventAt: session.lastHookEventAt,
+                recoveredApprovalAt: session.recoveredApprovalAt,
                 lastCodexTurnStartedAt: session.lastCodexTurnStartedAt,
                 completedAt: session.completedAt,
                 completionWasStaleTimeout: session.completionWasStaleTimeout,
@@ -3234,6 +3237,7 @@ actor SessionStore {
                 lastActivity: item.lastActivity,
                 createdAt: item.createdAt,
                 lastHookEventAt: item.lastHookEventAt,
+                recoveredApprovalAt: item.recoveredApprovalAt,
                 lastCodexTurnStartedAt: activeTurnStartedAt ??
                     item.lastCodexTurnStartedAt,
                 codexToolExecutionStartedAt: lifecycleStartsNewerTurn
@@ -3425,6 +3429,9 @@ actor SessionStore {
                 }
                 lifecycle.applying(to: &existing)
                 existing.source = source
+                existing.recoveredApprovalAt = snapshot.status == "waiting_for_approval"
+                    ? observedAt
+                    : nil
                 existing.pid = pid
                 existing.tty = snapshot.tty?.replacingOccurrences(
                     of: "/dev/",
@@ -3474,6 +3481,10 @@ actor SessionStore {
                     lastActivity: observedAt,
                     createdAt: observedAt,
                     lastHookEventAt: observedAt,
+                    recoveredApprovalAt:
+                        snapshot.status == "waiting_for_approval"
+                            ? observedAt
+                            : nil,
                     subagentHookState: SubagentHookState(
                         agents: snapshot.subagentAgents ?? [:],
                         hasAgentActivityInCurrentTurn:

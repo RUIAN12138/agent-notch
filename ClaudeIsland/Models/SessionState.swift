@@ -72,6 +72,10 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// Tool bookkeeping may still accept older events, but their phase cannot
     /// overwrite a newer Stop, permission request, or new-turn signal.
     var lastHookEventAt: Date?
+    /// A Bridge snapshot recorded a pending approval while Agent Notch was
+    /// offline. The approval context/socket is not recoverable, so the UI can
+    /// show a non-actionable recovery notice until a newer live Hook arrives.
+    var recoveredApprovalAt: Date?
     /// Native Codex boundary for the currently observed turn. Unlike token or
     /// tool activity, this changes only when a genuinely new turn starts.
     var lastCodexTurnStartedAt: Date?
@@ -131,6 +135,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         lastActivity: Date = Date(),
         createdAt: Date = Date(),
         lastHookEventAt: Date? = nil,
+        recoveredApprovalAt: Date? = nil,
         lastCodexTurnStartedAt: Date? = nil,
         codexToolExecutionStartedAt: Date? = nil,
         completedAt: Date? = nil,
@@ -160,6 +165,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.lastActivity = lastActivity
         self.createdAt = createdAt
         self.lastHookEventAt = lastHookEventAt
+        self.recoveredApprovalAt = recoveredApprovalAt
         self.lastCodexTurnStartedAt = lastCodexTurnStartedAt
         self.codexToolExecutionStartedAt = codexToolExecutionStartedAt
         self.completedAt = completedAt
@@ -214,6 +220,14 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// Whether this session needs user attention
     var needsAttention: Bool {
         phase.needsAttention
+    }
+
+    /// Whether the latest durable evidence is still an approval request whose
+    /// response channel could not survive an app restart. A newer accepted
+    /// lifecycle Hook supersedes the recovery hint without inventing a request.
+    var hasApprovalRecoveryNotice: Bool {
+        guard phase == .processing, let recoveredApprovalAt else { return false }
+        return (lastHookEventAt ?? .distantPast) <= recoveredApprovalAt
     }
 
     /// The active permission context, if any

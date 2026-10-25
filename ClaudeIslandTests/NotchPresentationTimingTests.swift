@@ -56,20 +56,34 @@ final class NotchPresentationTimingTests: XCTestCase {
         func state(
             permission: Bool = false,
             processing: Bool = false,
+            approvalRecovery: Bool = false,
             completion: Bool = false
         ) -> NotchAttentionPresentationState {
             NotchAttentionPolicy.presentationState(
                 hasPendingPermission: permission,
                 isProcessing: processing,
+                hasApprovalRecoveryNotice: approvalRecovery,
                 hasCompletion: completion
             )
         }
 
         XCTAssertEqual(
-            state(permission: true, processing: true, completion: true),
+            state(
+                permission: true,
+                processing: true,
+                approvalRecovery: true,
+                completion: true
+            ),
             .permission
         )
-        XCTAssertEqual(state(processing: true, completion: true), .processing)
+        XCTAssertEqual(
+            state(processing: true, approvalRecovery: true, completion: true),
+            .processing
+        )
+        XCTAssertEqual(
+            state(approvalRecovery: true, completion: true),
+            .approvalRecovery
+        )
         XCTAssertEqual(state(completion: true), .completion)
         XCTAssertEqual(state(), .idle)
     }

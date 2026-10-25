@@ -373,3 +373,9 @@ Boring Notch `v2.7.3` 的静态源码在悬停延迟动作执行前重新核对�
 Boring Notch `v2.7.3` 的公开源码 `ContentView.handleHover` 会取消过期悬停任务，并在关闭前检查当前视图状态；`BoringViewModel.close()` 还会尊重电池浮层/屏幕共享的关闭保护。这是静态源码观察，REA 对应的 Boring Notch DMG 仅用于身份与制品核对，不据此推断内部 Agent 交互。Agent Notch 已把同一交互原则独立映射到权限审批：审批到达时将悬停预览转为通知所有权，避免指针离开时的自动关闭任务收起仍可操作的审批会话；用户主动打开的面板继续保留用户所有权。
 
 此前单元测试分别覆盖了“指针离开只关闭 hover 所有的面板”和“点击可接管 hover 预览”，但没有覆盖审批恰好在鼠标离开关闭倒计时期间到达。本轮新增 `NotchPointerInteractionTests.testApprovalArrivingDuringHoverExitDelayKeepsPanelOpen`：通过测试事件源让悬停打开、离开并确认关闭条件已经成立，再送入审批并跨过旧关闭时限；面板仍打开且展示对应会话。指针交互、展示时序及两条信息型 Hook 回归合计 34 passed、0 failed、0 skipped；随后完整 macOS XCTest 为 481 passed、0 failed、0 skipped（macOS 27.2 / arm64），Xcode 记录 `ProcessExecutorTests.swift` 一条 QoS 优先级反转运行时警告。这是 ViewModel 与测试事件源的时序证据，不等同真实鼠标/AppKit GUI 或已安装应用验收；竞品应用仍未启动。
+
+### 重启后遗失审批上下文的非操作性恢复提示（2026-10-25）
+
+Agent Notch 的 Bridge 快照只保留最新事件与状态，不含权限请求正文，也无法恢复应用重启前的审批响应 socket。因此 `waiting_for_approval` 快照恢复后继续保持安全的 `.processing` 生命周期裁决，但不再把它展示成普通 Working：会话行改为提示“上次记录为等待审批，请检查 Agent 自身窗口”，可归档且没有批准/拒绝操作；刘海使用静态琥珀提示，不播放等待或处理中循环动画。真正的实时审批仍最高优先，其他正在处理的会话也高于恢复提示。接受到时间更新的生命周期 Hook 后，该提示失效；本地持久化会保存恢复边界，使应用再次重启时不会短暂退回误导的 Working。
+
+新增 `SessionStoreWatcherRecoveryTests.testOfflineApprovalSnapshotRestoresNonActionableNoticeUntilFreshHook`，覆盖 Bridge 恢复、应用快照再次恢复、无可操作交互以及新 Hook 清除提示；`SessionRowPresentationTests` 覆盖提示文案/归档和新 Hook 边界，`NotchPresentationTimingTests` 覆盖并发状态优先级。完整 macOS XCTest 为 488 passed、0 failed、0 skipped（macOS 27.2 / arm64）；Xcode 记录 `ProcessExecutorTests.swift` 一条 QoS 优先级反转运行时警告。该结果验证本地状态模型和自动化测试，不替代真实 Agent 审批恢复或安装后 GUI 验收；Vibe Island 与 Boring Notch 仍未启动，本次不把该设计归因于竞品。

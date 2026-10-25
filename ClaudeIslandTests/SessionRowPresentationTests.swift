@@ -22,7 +22,9 @@ final class SessionRowPresentationTests: XCTestCase {
         role: String? = nil,
         tool: String? = nil,
         inProgressTools: [ToolInProgress] = [],
-        terminalBoundaryAt: Date? = nil
+        terminalBoundaryAt: Date? = nil,
+        recoveredApprovalAt: Date? = nil,
+        lastHookEventAt: Date? = nil
     ) -> SessionRowPresentation {
         SessionRowPresentation(session: SessionState(
             sessionId: "row-session", cwd: "/tmp/row-presentation", phase: phase,
@@ -34,6 +36,8 @@ final class SessionRowPresentationTests: XCTestCase {
                 summary: nil, lastMessage: message, lastMessageRole: role,
                 lastToolName: tool, firstUserMessage: nil, lastUserMessageDate: nil
             ),
+            lastHookEventAt: lastHookEventAt,
+            recoveredApprovalAt: recoveredApprovalAt,
             completedAt: completedAt
         ))
     }
@@ -108,6 +112,40 @@ final class SessionRowPresentationTests: XCTestCase {
         let row = presentation(phase: .processing, message: "Old command completed", role: "tool", tool: "Bash")
         XCTAssertEqual(row.activity(language: .english), "Generating response")
         XCTAssertEqual(row.activity(language: .simplifiedChinese), "正在生成回复")
+    }
+
+    func testRecoveredApprovalIsVisibleButNeverActionable() async {
+        let recoveredAt = Date(timeIntervalSince1970: 500)
+        let row = presentation(
+            phase: .processing,
+            recoveredApprovalAt: recoveredAt,
+            lastHookEventAt: recoveredAt
+        )
+
+        XCTAssertEqual(row.status, .approvalRecovery)
+        XCTAssertEqual(row.interaction, .none)
+        XCTAssertTrue(row.canArchive)
+        XCTAssertEqual(
+            row.activity(language: .english),
+            "Approval was last seen waiting before restart. Check the Agent window."
+        )
+        XCTAssertEqual(
+            row.activity(language: .simplifiedChinese),
+            "上次记录为等待审批；请检查 Agent 自身窗口。"
+        )
+    }
+
+    func testNewerLiveHookSupersedesRecoveredApprovalNotice() async {
+        let recoveredAt = Date(timeIntervalSince1970: 500)
+        let row = presentation(
+            phase: .processing,
+            recoveredApprovalAt: recoveredAt,
+            lastHookEventAt: recoveredAt.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(row.status, .working)
+        XCTAssertEqual(row.interaction, .none)
+        XCTAssertFalse(row.canArchive)
     }
 
     func testInterruptedRowUsesItsTerminalStateInsteadOfStaleTranscript() async {

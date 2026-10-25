@@ -8,7 +8,7 @@ struct SessionRowPresentation {
     }
 
     enum Status: Equatable {
-        case working, compacting, approval, question, plan, ready, completed
+        case working, compacting, approval, approvalRecovery, question, plan, ready, completed
         case interrupted, failed, idle, ended
 
         func title(language: AppLanguage) -> String {
@@ -16,6 +16,8 @@ struct SessionRowPresentation {
             case .working: language.text("Working", "工作中")
             case .compacting: language.text("Compacting", "整理上下文")
             case .approval: language.text("Approval needed", "待审批")
+            case .approvalRecovery:
+                language.text("Check Agent for approval", "请在 Agent 中检查审批")
             case .question: language.text("Answer needed", "等待回答")
             case .plan: language.text("Plan review", "待审阅计划")
             case .ready: language.text("Ready", "等待输入")
@@ -40,6 +42,7 @@ struct SessionRowPresentation {
     }
 
     var status: Status {
+        if session.hasApprovalRecoveryNotice { return .approvalRecovery }
         switch session.phase {
         case .processing: return .working
         case .compacting: return .compacting
@@ -58,11 +61,19 @@ struct SessionRowPresentation {
     }
 
     var canArchive: Bool {
-        session.phase == .idle || session.phase == .waitingForInput ||
+        session.hasApprovalRecoveryNotice ||
+            session.phase == .idle || session.phase == .waitingForInput ||
             session.phase == .interrupted || session.phase == .failed
     }
 
     func activity(language: AppLanguage) -> String {
+        if session.hasApprovalRecoveryNotice {
+            return language.text(
+                "Approval was last seen waiting before restart. Check the Agent window.",
+                "上次记录为等待审批；请检查 Agent 自身窗口。"
+            )
+        }
+
         switch interaction {
         case .question:
             return language.text("Open the question to choose your answer", "打开问题，选择或填写你的回答")

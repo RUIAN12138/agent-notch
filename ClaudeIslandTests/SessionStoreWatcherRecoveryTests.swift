@@ -268,6 +268,80 @@ final class SessionStoreWatcherRecoveryTests: XCTestCase {
         XCTAssertTrue(watcher.watching.isEmpty)
     }
 
+    func testOfflineApprovalSnapshotRestoresNonActionableNoticeUntilFreshHook() async throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        try fixture.writeBridgeSession(
+            event: "PermissionRequest",
+            status: "waiting_for_approval"
+        )
+        try fixture.writeTranscript(completed: false)
+        let watcher = RecoveryWatcher()
+        let store = fixture.store(watcher: watcher)
+        await store.startPeriodicStatusCheck()
+        let recovered = try await waitForRestore(
+            store, id: fixture.id, watcher: watcher
+        )
+        await store.stopPeriodicStatusCheck()
+
+        XCTAssertEqual(recovered.phase, .processing)
+        XCTAssertEqual(
+            recovered.recoveredApprovalAt?.timeIntervalSince1970 ?? .nan,
+            fixture.observedAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertTrue(recovered.hasApprovalRecoveryNotice)
+        XCTAssertEqual(
+            SessionRowPresentation(session: recovered).interaction,
+            .none
+        )
+
+        let persistedRows = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: fixture.snapshot)
+            ) as? [[String: Any]]
+        )
+        XCTAssertNotNil(persistedRows.first?["recoveredApprovalAt"])
+        try FileManager.default.removeItem(
+            at: fixture.bridge.appendingPathComponent("fixture.json")
+        )
+
+        let persistedWatcher = RecoveryWatcher()
+        let persistedStore = fixture.store(watcher: persistedWatcher)
+        await persistedStore.startPeriodicStatusCheck()
+        let restoredFromAppSnapshot = try await waitForRestore(
+            persistedStore, id: fixture.id, watcher: persistedWatcher
+        )
+        await persistedStore.stopPeriodicStatusCheck()
+        XCTAssertTrue(restoredFromAppSnapshot.hasApprovalRecoveryNotice)
+        XCTAssertEqual(
+            SessionRowPresentation(session: restoredFromAppSnapshot).interaction,
+            .none
+        )
+
+        let resumedAt = Date()
+        await persistedStore.process(.hookReceived(HookEvent(
+            sessionId: fixture.id,
+            cwd: fixture.root.path,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: resumedAt.timeIntervalSince1970,
+            source: "claude",
+            pid: Int(ProcessInfo.processInfo.processIdentifier),
+            tty: nil,
+            tool: nil,
+            toolInput: nil,
+            toolUseId: nil,
+            notificationType: nil,
+            message: nil
+        )))
+        let resumed = await persistedStore.session(for: fixture.id)
+        XCTAssertEqual(resumed?.phase, .processing)
+        XCTAssertFalse(resumed?.hasApprovalRecoveryNotice ?? true)
+        await store.process(.sessionEnded(sessionId: fixture.id))
+        await persistedStore.process(.sessionEnded(sessionId: fixture.id))
+    }
+
     func testOfflineBridgeSnapshotRestoresActiveSubagentIdentitySet() async throws {
         let fixture = try Fixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }

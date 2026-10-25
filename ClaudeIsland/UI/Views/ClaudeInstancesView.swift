@@ -376,7 +376,7 @@ struct InstanceRow: View {
 
     private var statusColor: Color {
         switch presentation.status {
-        case .approval, .question, .plan: TerminalColors.amber
+        case .approval, .approvalRecovery, .question, .plan: TerminalColors.amber
         case .completed: TerminalColors.green
         case .interrupted: TerminalColors.dim
         case .failed: .red
@@ -387,6 +387,7 @@ struct InstanceRow: View {
     private var statusSymbol: String {
         switch presentation.status {
         case .approval: "hand.raised"
+        case .approvalRecovery: "exclamationmark.bubble.fill"
         case .question: "questionmark.bubble"
         case .plan: "doc.text"
         case .completed: "checkmark.circle"

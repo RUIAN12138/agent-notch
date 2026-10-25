@@ -31,6 +31,7 @@ private struct NotchLayoutAnimationState: Equatable {
     let size: CGSize
     let activityVisible: Bool
     let permissionVisible: Bool
+    let approvalRecoveryVisible: Bool
     let completionVisible: Bool
     let compactStyle: CompactNotchStyle
     let compactWidth: Double
@@ -102,9 +103,17 @@ struct NotchView: View {
 
     @Namespace private var activityNamespace
 
-    /// Whether any Claude session is currently processing or compacting
+    /// Whether a session is doing newly observed work, rather than merely
+    /// retaining a recovered approval snapshot without its response channel.
     private var isAnyProcessing: Bool {
-        sessionMonitor.instances.contains { $0.phase == .processing || $0.phase == .compacting }
+        sessionMonitor.instances.contains {
+            !$0.hasApprovalRecoveryNotice &&
+                ($0.phase == .processing || $0.phase == .compacting)
+        }
+    }
+
+    private var hasApprovalRecoveryNotice: Bool {
+        sessionMonitor.instances.contains { $0.hasApprovalRecoveryNotice }
     }
 
     /// Whether any Claude session has a pending permission request
@@ -151,12 +160,13 @@ struct NotchView: View {
         )
     }
 
-    /// All status surfaces use the same priority so concurrent sessions do
-    /// not show a completion cue beside an active processing indicator.
+    /// Live permission/work stays above recovery and completion reminders
+    /// across every status surface.
     private var compactAttentionState: NotchAttentionPresentationState {
         NotchAttentionPolicy.presentationState(
             hasPendingPermission: hasPendingPermission,
             isProcessing: isAnyProcessing,
+            hasApprovalRecoveryNotice: hasApprovalRecoveryNotice,
             hasCompletion:
                 hasWaitingForInput || hasRecentSubagentCompletion
         )
@@ -202,6 +212,8 @@ struct NotchView: View {
             size: notchSize,
             activityVisible: isAnyProcessing,
             permissionVisible: hasPendingPermission,
+            approvalRecoveryVisible:
+                compactAttentionState == .approvalRecovery,
             completionVisible:
                 hasWaitingForInput || hasRecentSubagentCompletion,
             compactStyle: preferences.compactStyle,
@@ -476,6 +488,10 @@ struct NotchView: View {
             return .waiting
         case .processing:
             return .working
+        case .approvalRecovery:
+            // The interrupted approval cannot be resumed from this snapshot.
+            // Keep the pet calm; the static warning icon carries the cue.
+            return .idle
         case .completion:
             // Subagent completion uses a static checkmark; do not add a new
             // looping pet animation for that compact reminder.
@@ -606,6 +622,36 @@ struct NotchView: View {
                                 id: "spinner",
                                 in: activityNamespace,
                                 isSource: showClosedActivity
+                            )
+                    } else if compactAttentionState == .approvalRecovery {
+                        Image(systemName: "exclamationmark.bubble.fill")
+                            .font(
+                                .system(
+                                    size: 10 * compactAnimationScale,
+                                    weight: .semibold
+                                )
+                            )
+                            .foregroundStyle(TerminalColors.amber)
+                            .frame(
+                                width:
+                                    CompactNotchMetrics
+                                        .compactStatusCanvasSize
+                                    * compactAnimationScale,
+                                height:
+                                    CompactNotchMetrics
+                                        .compactStatusCanvasSize
+                                    * compactAnimationScale
+                            )
+                            .matchedGeometryEffect(
+                                id: "spinner",
+                                in: activityNamespace,
+                                isSource: showClosedActivity
+                            )
+                            .accessibilityLabel(
+                                preferences.language.text(
+                                    "Check Agent for approval",
+                                    "请在 Agent 中检查审批"
+                                )
                             )
                     } else if compactAttentionState == .completion {
                         ReadyForInputIndicatorIcon(
@@ -840,6 +886,16 @@ struct NotchView: View {
                         PixelLoaderIcon(
                             size: CompactNotchMetrics.openedAnimationSize
                         )
+                    } else if compactAttentionState == .approvalRecovery {
+                        Image(systemName: "exclamationmark.bubble.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(TerminalColors.amber)
+                            .accessibilityLabel(
+                                preferences.language.text(
+                                    "Check Agent for approval",
+                                    "请在 Agent 中检查审批"
+                                )
+                            )
                     } else if compactAttentionState == .completion {
                         ReadyForInputIndicatorIcon(
                             size: 20,
@@ -927,11 +983,11 @@ struct NotchView: View {
             // Show claude activity when processing or waiting for permission
             activityCoordinator.showActivity(type: .claude)
             isVisible = true
-        case .completion:
+        case .approvalRecovery, .completion:
             delayedUIWork.visibilityTask?.cancel()
             delayedUIWork.visibilityTask = nil
-            // Keep the compact completion cue visible without a processing
-            // spinner.
+            // Keep the static recovery/completion cue visible without a false
+            // processing spinner or a background activity indicator.
             activityCoordinator.hideActivity()
             isVisible = true
         case .idle:
