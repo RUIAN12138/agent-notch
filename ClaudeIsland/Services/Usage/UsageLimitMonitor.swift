@@ -8,6 +8,7 @@
 
 import Combine
 import Foundation
+import UserNotifications
 
 struct UsageLimitWindow: Equatable, Sendable {
     let usedPercent: Double
@@ -27,6 +28,170 @@ struct UsageLimitSnapshot: Equatable, Sendable {
     let updatedAt: Date
 }
 
+enum UsageLimitWindowKind: String, CaseIterable, Sendable {
+    case primary
+    case secondary
+}
+
+struct UsageLimitThresholdAlert: Equatable, Sendable {
+    let window: UsageLimitWindowKind
+    let usedPercent: Double
+    let thresholdPercent: Int
+    let windowMinutes: Int
+    let resetsAt: Date
+}
+
+enum UsageLimitAlertPolicy {
+    static let defaultThreshold = 80
+
+    static func sanitizedThreshold(_ value: Int) -> Int {
+        min(100, max(50, value))
+    }
+
+    static func thresholdCrossings(
+        from previous: UsageLimitSnapshot?,
+        to current: UsageLimitSnapshot?,
+        thresholdPercent: Int,
+        enabled: Bool
+    ) -> [UsageLimitThresholdAlert] {
+        guard enabled,
+              let previous,
+              let current,
+              previous.source == .codex,
+              current.source == .codex else {
+            return []
+        }
+
+        let threshold = Double(sanitizedThreshold(thresholdPercent))
+        let pairs: [(UsageLimitWindowKind, UsageLimitWindow?, UsageLimitWindow?)] = [
+            (.primary, previous.primary, current.primary),
+            (.secondary, previous.secondary, current.secondary),
+        ]
+
+        return pairs.compactMap { kind, oldWindow, newWindow in
+            guard let oldWindow,
+                  let newWindow,
+                  abs(oldWindow.resetsAt.timeIntervalSince(newWindow.resetsAt)) < 60,
+                  oldWindow.usedPercent < threshold,
+                  newWindow.usedPercent >= threshold else {
+                return nil
+            }
+
+            return UsageLimitThresholdAlert(
+                window: kind,
+                usedPercent: newWindow.usedPercent,
+                thresholdPercent: Int(threshold),
+                windowMinutes: newWindow.windowMinutes,
+                resetsAt: newWindow.resetsAt
+            )
+        }
+    }
+}
+
+/// Tracks one alert per Codex rate-limit window. The previous snapshot is
+/// updated even while alerts are disabled so enabling alerts never produces
+/// a retroactive notification for a threshold already reached.
+struct UsageLimitAlertTracker {
+    private let defaults: UserDefaults
+    private(set) var previousSnapshot: UsageLimitSnapshot?
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    mutating func observe(
+        snapshot: UsageLimitSnapshot?,
+        enabled: Bool,
+        thresholdPercent: Int
+    ) -> [UsageLimitThresholdAlert] {
+        defer { previousSnapshot = snapshot }
+        guard let snapshot else { return [] }
+
+        let candidates = UsageLimitAlertPolicy.thresholdCrossings(
+            from: previousSnapshot,
+            to: snapshot,
+            thresholdPercent: thresholdPercent,
+            enabled: enabled
+        )
+
+        return candidates.filter { alert in
+            let key = "notchUsageLimitAlert.lastReset.\(alert.window.rawValue)"
+            let resetTime = alert.resetsAt.timeIntervalSince1970
+            if let lastReset = defaults.object(forKey: key) as? Double,
+               abs(lastReset - resetTime) < 60 {
+                return false
+            }
+            defaults.set(resetTime, forKey: key)
+            return true
+        }
+    }
+
+    mutating func resetBaseline() {
+        previousSnapshot = nil
+    }
+}
+
+enum UsageLimitNotificationAuthorization {
+    static func requestIfNeeded() async -> Bool {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            return true
+        case .notDetermined:
+            return (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+        case .denied:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+}
+
+private enum UsageLimitNotificationScheduler {
+    static func schedule(
+        _ alert: UsageLimitThresholdAlert,
+        language: AppLanguage
+    ) {
+        let windowLabel: String
+        if alert.windowMinutes >= 10_080 {
+            windowLabel = language.text("weekly window", "周用量窗口")
+        } else {
+            let hours = max(1, Int((Double(alert.windowMinutes) / 60).rounded()))
+            windowLabel = language.text("\(hours)-hour window", "\(hours) 小时窗口")
+        }
+        let resetTime = DateFormatter.localizedString(
+            from: alert.resetsAt,
+            dateStyle: .none,
+            timeStyle: .short
+        )
+        let content = UNMutableNotificationContent()
+        content.title = language.text(
+            "Codex usage threshold reached",
+            "Codex 用量已达到提醒阈值"
+        )
+        content.body = language.text(
+            "Your \(windowLabel) has reached \(Int(alert.usedPercent.rounded()))% (resets at \(resetTime)).",
+            "Codex \(windowLabel)已使用 \(Int(alert.usedPercent.rounded()))%，将于 \(resetTime) 重置。"
+        )
+        content.sound = .default
+        content.threadIdentifier = "agent-notch-usage-limits"
+
+        let resetIdentity = Int(alert.resetsAt.timeIntervalSince1970)
+        let request = UNNotificationRequest(
+            identifier: "usage-limit-\(alert.window.rawValue)-\(resetIdentity)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                NSLog("Failed to schedule Codex usage alert: %@", error.localizedDescription)
+            }
+        }
+    }
+}
+
 @MainActor
 final class UsageLimitMonitor: ObservableObject {
     static let shared = UsageLimitMonitor()
@@ -35,6 +200,7 @@ final class UsageLimitMonitor: ObservableObject {
 
     private var timer: Timer?
     private var isRefreshing = false
+    private var alertTracker = UsageLimitAlertTracker()
 
     private init() {
         refresh()
@@ -59,6 +225,24 @@ final class UsageLimitMonitor: ObservableObject {
                 Self.loadLatestCodexSnapshot()
             }.value
             snapshot = latest
+            guard let latest else {
+                alertTracker.resetBaseline()
+                isRefreshing = false
+                return
+            }
+
+            let defaults = UserDefaults.standard
+            let alerts = alertTracker.observe(
+                snapshot: latest,
+                enabled: defaults.bool(forKey: "notchUsageLimitAlertsEnabled"),
+                thresholdPercent: defaults.object(
+                    forKey: "notchUsageLimitAlertThreshold"
+                ) as? Int ?? UsageLimitAlertPolicy.defaultThreshold
+            )
+            let language = AppLanguage(
+                rawValue: defaults.string(forKey: "notchLanguage") ?? ""
+            ) ?? .english
+            alerts.forEach { UsageLimitNotificationScheduler.schedule($0, language: language) }
             isRefreshing = false
         }
     }

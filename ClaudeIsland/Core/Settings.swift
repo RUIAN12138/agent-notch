@@ -244,6 +244,8 @@ final class NotchPreferences: ObservableObject {
         static let panelWidth = "notchPanelWidth"
         static let panelHeight = "notchPanelHeight"
         static let showUsageLimits = "notchShowUsageLimits"
+        static let usageLimitAlertsEnabled = "notchUsageLimitAlertsEnabled"
+        static let usageLimitAlertThreshold = "notchUsageLimitAlertThreshold"
         static let language = "notchLanguage"
         static let compactStyle = "notchCompactStyle"
         static let compactWidth = "notchCompactWidth"
@@ -411,6 +413,27 @@ final class NotchPreferences: ObservableObject {
         didSet { defaults.set(showUsageLimits, forKey: Keys.showUsageLimits) }
     }
 
+    /// System notifications for Codex quota windows are opt-in because they
+    /// can interrupt the user outside the expanded notch.
+    @Published var usageLimitAlertsEnabled: Bool {
+        didSet {
+            defaults.set(usageLimitAlertsEnabled, forKey: Keys.usageLimitAlertsEnabled)
+        }
+    }
+
+    @Published var usageLimitAlertThreshold: Int {
+        didSet {
+            let sanitized = UsageLimitAlertPolicy.sanitizedThreshold(
+                usageLimitAlertThreshold
+            )
+            if usageLimitAlertThreshold != sanitized {
+                usageLimitAlertThreshold = sanitized
+                return
+            }
+            defaults.set(usageLimitAlertThreshold, forKey: Keys.usageLimitAlertThreshold)
+        }
+    }
+
     @Published var language: AppLanguage {
         didSet { defaults.set(language.rawValue, forKey: Keys.language) }
     }
@@ -522,6 +545,12 @@ final class NotchPreferences: ObservableObject {
         panelHeight = defaults.object(forKey: Keys.panelHeight) as? Double ?? 560
         showUsageLimits =
             defaults.object(forKey: Keys.showUsageLimits) as? Bool ?? true
+        usageLimitAlertsEnabled =
+            defaults.object(forKey: Keys.usageLimitAlertsEnabled) as? Bool ?? false
+        usageLimitAlertThreshold = UsageLimitAlertPolicy.sanitizedThreshold(
+            defaults.object(forKey: Keys.usageLimitAlertThreshold) as? Int
+                ?? UsageLimitAlertPolicy.defaultThreshold
+        )
         language = AppLanguage(
             rawValue: defaults.string(forKey: Keys.language) ?? ""
         ) ?? .english

@@ -67,6 +67,8 @@ struct NotchStudioSettingsView: View {
     @State private var hooksInstalled = false
     @State private var hooksNeedRepair = false
     @State private var previewState: NotchPreviewState = .idle
+    @State private var usageAlertPermissionDenied = false
+    @State private var usageAlertAuthorizationPending = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
@@ -972,8 +974,8 @@ struct NotchStudioSettingsView: View {
             settingsTitle(
                 t("Usage limits", "用量限制"),
                 caption: t(
-                    "A compact readout at the top of the expanded notch",
-                    "在展开刘海顶部显示紧凑用量信息"
+                    "Keep Codex subscription limits visible without leaving your task.",
+                    "无需离开任务即可查看 Codex 订阅用量。"
                 )
             )
 
@@ -981,8 +983,8 @@ struct NotchStudioSettingsView: View {
                 settingToggle(
                     t("Show usage limits", "显示用量限制"),
                     detail: t(
-                        "Read Claude and Codex limits from local session data.",
-                        "从本地会话数据读取 Claude 与 Codex 用量。"
+                        "Read Codex limits from local session data.",
+                        "仅从本地 Codex 会话数据读取用量。"
                     ),
                     isOn: $preferences.showUsageLimits
                 )
@@ -994,8 +996,48 @@ struct NotchStudioSettingsView: View {
                     .opacity(preferences.showUsageLimits ? 1 : 0.45)
             }
 
+            settingsCard {
+                settingToggle(
+                    t("Codex threshold alerts", "Codex 用量阈值提醒"),
+                    detail: t(
+                        "Send a local notification when a usage window crosses the selected threshold.",
+                        "用量窗口首次达到阈值时发送本机通知。"
+                    ),
+                    isOn: usageLimitAlertsBinding
+                )
+                .disabled(usageAlertAuthorizationPending)
+
+                Divider()
+
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(t("Alert threshold", "提醒阈值"))
+                            .font(.system(size: 13, weight: .medium))
+                        Text(t(
+                            "Applies to each Codex usage window",
+                            "分别监控 Codex 的各个用量窗口"
+                        ))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Picker(
+                        t("Alert threshold", "提醒阈值"),
+                        selection: $preferences.usageLimitAlertThreshold
+                    ) {
+                        ForEach([50, 60, 70, 80, 90, 100], id: \.self) { value in
+                            Text("\(value)%").tag(value)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(width: 90)
+                    .accessibilityIdentifier("settings.usage.alertThreshold")
+                }
+                .disabled(!preferences.usageLimitAlertsEnabled)
+                .opacity(preferences.usageLimitAlertsEnabled ? 1 : 0.45)
+            }
+
             HStack(spacing: 10) {
-                sourcePill("Claude", color: Color(red: 0.95, green: 0.48, blue: 0.27))
                 sourcePill("Codex", color: Color(red: 0.32, green: 0.67, blue: 0.95))
                 Spacer()
                 Text(t("Local only", "仅限本地"))
@@ -1003,6 +1045,41 @@ struct NotchStudioSettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .alert(
+            t("Notifications unavailable", "无法启用通知"),
+            isPresented: $usageAlertPermissionDenied
+        ) {
+            Button(t("OK", "好"), role: .cancel) { }
+        } message: {
+            Text(t(
+                "Allow Agent Notch notifications in System Settings, then turn this option on again.",
+                "请先在系统设置中允许 Agent Notch 发送通知，再重新开启此选项。"
+            ))
+        }
+    }
+
+    private var usageLimitAlertsBinding: Binding<Bool> {
+        Binding(
+            get: { preferences.usageLimitAlertsEnabled },
+            set: { isEnabled in
+                guard isEnabled else {
+                    preferences.usageLimitAlertsEnabled = false
+                    return
+                }
+                guard !usageAlertAuthorizationPending else { return }
+
+                Task {
+                    usageAlertAuthorizationPending = true
+                    let authorized = await UsageLimitNotificationAuthorization.requestIfNeeded()
+                    usageAlertAuthorizationPending = false
+                    guard authorized else {
+                        usageAlertPermissionDenied = true
+                        return
+                    }
+                    preferences.usageLimitAlertsEnabled = true
+                }
+            }
+        )
     }
 
     private var systemSettings: some View {
