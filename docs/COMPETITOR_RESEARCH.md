@@ -238,3 +238,9 @@ Vibe Island `1.0.55` 更新说明称根回合完成后，仍运行的后台子 A
 Agent Notch 接受 `SessionEnd` / `SessionExpired` 后会删除会话及其生命周期游标。此前若旧队列中的 `PreToolUse` 或 `UserPromptSubmit` 在之后才到达，就可能因游标已删除而重新创建 Working 会话。当前保留最多 512 个最近的移除时间边界，并将其写入权限受限的 `removed-session-boundaries.json` 侧车文件；读取和写入均有大小上限。普通活动会话快照先落盘，之后才写入已清除的边界，因此进程若在两次原子写入之间退出，旧边界仍会挡住陈旧活动行。跨重启恢复时，时间戳不晚于移除边界的持久会话行和 Bridge 快照会被忽略；严格更新的活动 Bridge 快照（包括中途启动可见的 `PreToolUse`）可以恢复会话并清除旧边界。新的 Hook 根代际仍要求事件时间严格晚于移除边界；缺失或错误的 Agent 时间戳仍需要各来源适配器和真实 Hook 验收。
 
 新增 `SessionStoreLifecycleTests.testRemovedSessionRejectsLateActivityButAllowsLaterRootStart` 覆盖 SessionEnd 后旧工具事件和旧提示事件被拒绝，以及更晚的新提示能恢复同一会话。跨重启用例 `SessionStoreWatcherRecoveryTests.testRemovedSessionBoundarySurvivesRestartWithoutBlockingNewMidToolRestore` 进一步覆盖：旧活动行与旧 Bridge 快照被墓碑挡住，而较新的 `PreToolUse` 快照能恢复中途启动的工作会话。该跨重启用例定向运行 1 passed；本轮完整 macOS XCTest 为 438 passed、0 failed、0 skipped。Xcode 记录 `ProcessExecutorTests` 与 `TmuxTargetFinderTests` 的 QoS 优先级反转运行时警告。这些是本地状态逻辑自动化证据，不等于真实 Agent 事件队列、真实 Hook 调度或已安装 UI 验收。
+
+### 信息通知不应伪造空闲会话（2026-10-25）
+
+本条是 Agent Notch 自身状态入口的源码发现，不是对 Vibe Island 或 Boring Notch 内部实现的推断。`Notification(auth_success)` 等普通信息事件没有目标会话状态迁移，但此前 `SessionStore.processHookEvent` 会先构造占位会话，再因为没有生命周期信号而将其保存，导致没有真实 Agent 回合的空闲卡片进入会话状态。
+
+现在新会话只会由有效生命周期信号建立；已存在的会话仍能收到普通信息事件，`Notification(idle_prompt)` 仍被视为完成信号。新增 `SessionStoreLifecycleTests.testInformationalNotificationCannotCreateSession` 先在旧实现上复现失败，修复后通知相关定向测试 3 passed；完整 macOS XCTest 为 439 passed、0 failed、0 skipped。Xcode 记录 `ProcessExecutorTests` 的 QoS 优先级反转运行时警告。以上是本地源代码与自动化状态测试证据，不是实际 Agent Hook 调度或桌面 UI 验收。

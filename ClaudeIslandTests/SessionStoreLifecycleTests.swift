@@ -544,6 +544,27 @@ final class SessionStoreLifecycleTests: XCTestCase {
         )
     }
 
+    func testInformationalNotificationCannotCreateSession() async {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "orphan-notification-\(UUID().uuidString)"
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "Notification",
+            status: "notification",
+            observedAt: Date(),
+            notificationType: "auth_success",
+            source: "claude"
+        )))
+
+        let session = await store.session(for: sessionId)
+        XCTAssertNil(session)
+    }
+
     func testDeliveredApprovalRejectsOlderCompletion() async throws {
         let store = SessionStore(
             persistenceEnabled: false,

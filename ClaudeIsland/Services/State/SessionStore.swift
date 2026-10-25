@@ -342,11 +342,7 @@ actor SessionStore {
             }
         }
 
-        let isNewSession = !sessions.keys.contains(sessionId)
-        var session = sessions[sessionId] ?? createSession(
-            from: event,
-            observedAt: observedAt
-        )
+        let existingSession = sessions[sessionId]
         let newPhase: SessionPhase? = event.event == "SessionStart"
             ? .waitingForInput
             : event.determinePhase(observedAt: observedAt)
@@ -375,6 +371,27 @@ actor SessionStore {
             hookSignal = nil
         }
 
+        // Informational events may update a known session, but must not invent
+        // an idle card when no lifecycle event has established that session.
+        guard hookSignal != nil || existingSession != nil else {
+            Self.logger.info(
+                "Ignoring informational hook without a session: \(event.event, privacy: .public)"
+            )
+            return
+        }
+
+        let isNewSession: Bool
+        var session: SessionState
+        if let existingSession {
+            isNewSession = false
+            session = existingSession
+        } else {
+            isNewSession = true
+            session = createSession(
+                from: event,
+                observedAt: observedAt
+            )
+        }
         let previousPhase = session.phase
         var shouldApplyLifecycle = false
         var isCurrentObservation: Bool
