@@ -192,7 +192,11 @@ Vibe Island 官方 `1.0.54` 更新记录声称，Claude 活动会话卡片现在
 
 Vibe Island `1.0.55` 的官方更新说明声称可以在刘海中回答 Codex 问题；这仍只是厂商功能说明，不证明其内部接入方式或本机运行行为。进一步核对 [OpenAI Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs) 后，`item/tool/requestUserInput` 是由服务端发起、标记为 experimental 的请求；它通过配对响应完成当前请求，而不是往会话里发送一条普通文本。对应的 [响应 JSON schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/ToolRequestUserInputResponse.json) 按问题 ID 返回答案数组。
 
-当前 Agent Notch 读取 Codex rollout/session 文件；回复路径则调用独立的 `codex exec resume --all --skip-git-repo-check` 进程。它没有持有发出该实验性 server request 的 app-server 连接，因此不能用“读取到问题后另开 CLI 发送文本”冒充同一请求的应答。当前先不实现伪应答，也不引入未审查的代理/接管通道；待上游协议稳定性、请求 ID 与并行问题、取消/超时，以及 Desktop/CLI 覆盖面得到验证后再评估集成。后台命令与端口操作也继续暂缓，因其权限面和验收成本更大。
+补充核对官方 app-server 实现后，发现可行路径比“协议没有控制通道”更具体：`thread/resume` 对同一 app-server 内仍运行的 `threadId` 会重新加入该线程；resume 完成后，服务端会把该线程尚未解决的 server request 重放给新连接。官方协议测试也验证了应答必须回传原 JSON-RPC `request_id`，answers 再按 question ID 映射，并在 turn 完成前收到 `serverRequest/resolved`。本地 Codex CLI 源码还提供 `app-server proxy`，将 stdio 转接到既有控制 socket；默认 socket 位于当前 `CODEX_HOME/app-server-control/app-server-control.sock`。参考：[thread resume 定义](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/thread.rs)、[resume 请求重放实现](https://github.com/openai/codex/blob/main/codex-rs/app-server/src/request_processors/thread_lifecycle.rs)、[原生提问协议测试](https://github.com/openai/codex/blob/main/codex-rs/app-server/tests/suite/v2/request_user_input.rs)、[CLI proxy 与控制 socket](https://github.com/openai/codex/blob/main/codex-rs/cli/src/main.rs)。
+
+因此，真正的产品边界不是“绝对做不了”，而是 Agent Notch 目前尚未接入并确认自己连接的是正在承载该 Codex 会话的同一个 app-server。另起 `codex exec resume` 或启动第二个 app-server 都不能等价替代；错误的线程所有权/进程可能造成重复控制或会话竞争。并且该提问 schema 和 daemon 生命周期当前仍属实验性接口。后续若实现，应只尝试连接用户已经运行的本地服务、使用精确 thread/request/question ID 配对、处理 `serverRequest/resolved` 与取消/过期，不自动启动或重启 Codex 服务；缺少现有服务时保持观察/原 CLI 行为，不做伪应答。后台命令与端口操作仍暂缓，因其权限面和验收成本更大。
+
+本轮只做官方协议/源码静态核验；没有启动 Vibe Island、Boring Notch、Codex app-server，也没有真实 Codex 桌面端到端验证。该接入路线是依据公开源码得出的可行性判断，仍需确认目标 Codex Desktop 版本实际使用的控制 socket 与线程所有权行为后才能实现。
 
 本轮同时新增 `SessionStoreLifecycleTests.testSuspendedHistorySnapshotCannotOverrideNewerStopHook`，用注入的历史快照和可控异步闸门验证：旧用户消息快照在解析挂起期间遇到较新的 Stop Hook，之后恢复也不得把已完成会话重新判为 processing；XCTest 观察到 `.activeOlderThanHook`，完成时间保持 Hook 边界。本机生命周期套件及完整 macOS XCTest 均通过。此项是 Agent Notch 自身的状态时序回归测试，不是竞品运行观察或真实桌面验收。
 
@@ -220,7 +224,7 @@ Agent Notch 采纳的是“默认不改变既有行为、显式选择后才跟�
 
 ### 本轮结论与下一候选
 
-Codex 原生提问已完成协议边界审查，但因为协议仍标记为 experimental 且当前 app-server 控制通道缺失，暂不实现。后续候选优先聚焦 Agent Notch 已有会话/审批状态的真实端到端验收与可靠性缺口；所有基于 Vibe Island、Boring Notch 的判断继续限于已留存的静态包证据、公开更新记录和 Boring Notch 源码，不能外推为运行时结论。
+Codex 原生提问已从“找不到可行接收路径”收敛为“可能通过既有 app-server proxy 重放并配对请求，但实验性协议及当前桌面连接归属尚未验收”。下一候选是只读确认本机 Codex Desktop 与 CLI 的控制 socket/线程所有权模型，再决定是否做默认关闭、仅连接既有服务的实验性问答集成；在此之前不接入、不启动服务，也不把新开 CLI 的文本消息当成原生问题答案。所有基于 Vibe Island、Boring Notch 的判断继续限于已留存的静态包证据、公开更新记录和 Boring Notch 源码，不能外推为运行时结论。
 
 ### 自定义 Agent 的外观配置（2026-10-24）
 
