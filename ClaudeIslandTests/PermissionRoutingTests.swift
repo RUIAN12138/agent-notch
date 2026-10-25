@@ -31,6 +31,21 @@ private final class PermissionSocketFixtureEvents: @unchecked Sendable {
     }
 }
 
+private final class PermissionSocketStartResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Bool?
+
+    func set(_ value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        storedValue = value
+    }
+
+    var value: Bool? {
+        lock.lock(); defer { lock.unlock() }
+        return storedValue
+    }
+}
+
 @MainActor
 private final class BufferedBatchCanceller: SessionPermissionCancelling {
     let server: HookSocketServer
@@ -51,6 +66,47 @@ private final class BufferedBatchCanceller: SessionPermissionCancelling {
 
 final class PermissionRoutingTests: XCTestCase {
     private let socketEvents = PermissionSocketFixtureEvents()
+
+    func testSocketStartCompletionConfirmsListenerIsReady() async throws {
+        let path = "/tmp/agent-notch-test-\(UUID().uuidString).sock"
+        let server = HookSocketServer(socketPath: path)
+        defer { server.stop(); unlink(path) }
+        let result = PermissionSocketStartResult()
+        let started = expectation(description: "socket startup completion")
+
+        server.start(onEvent: { _ in }, completion: { isListening in
+            result.set(
+                isListening
+                    && access(path, F_OK) == 0
+                    && server.diagnosticsInput().isRunning
+            )
+            started.fulfill()
+        })
+
+        await fulfillment(of: [started], timeout: 3)
+        XCTAssertEqual(result.value, true)
+        let client = try connect(to: path)
+        close(client)
+    }
+
+    func testSocketStartCompletionReportsPreparationFailure() async throws {
+        let path = "/tmp/agent-notch-test-\(UUID().uuidString).sock"
+        let url = URL(fileURLWithPath: path)
+        try Data().write(to: url)
+        let server = HookSocketServer(socketPath: path)
+        defer { server.stop(); try? FileManager.default.removeItem(at: url) }
+        let result = PermissionSocketStartResult()
+        let started = expectation(description: "failed socket startup completion")
+
+        server.start(onEvent: { _ in }, completion: { isListening in
+            result.set(isListening)
+            started.fulfill()
+        })
+
+        await fulfillment(of: [started], timeout: 3)
+        XCTAssertEqual(result.value, false)
+        XCTAssertFalse(server.diagnosticsInput().isRunning)
+    }
 
     @MainActor
     func testRenderedBindingsCaptureRequestIdentityWhenToolIdIsReused() {

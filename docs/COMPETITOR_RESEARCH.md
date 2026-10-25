@@ -205,6 +205,14 @@ Agent Notch 原本 Bridge 接受任意 `--source`，但来源身份在 Swift 中
 
 Agent Notch 采纳的是“默认不改变既有行为、显式选择后才跟随活动显示器”的兼容原则：新增 `activeDisplay` 选择模式，复用屏幕切换时重建窗口的路径，切换时由新窗口以收起态呈现；活动屏幕不可解析时回退到内置屏幕。系统屏幕参数变更仍保留原有防抖，而用户手动选择屏幕使用独立的应用通知，不再伪装成硬件变化。自动模式仍优先内置屏幕，指定屏幕仍通过已保存标识恢复。新策略测试覆盖活动屏幕优先级、回退、旧偏好值和同名显示器身份；本轮完整 macOS XCTest 为 `419 passed / 0 failed`。这些是本地构建/测试证据，不是多显示器桌面端到端验收。
 
+### Hook Socket 就绪与 Bridge 快照恢复顺序（2026-10-25）
+
+这是 Agent Notch 自身的启动时序问题，不是从 Vibe Island 或 Boring Notch 私有实现推断而来。源码显示 Bridge 会在发送 socket 事件前原子持久化活动会话快照；`ClaudeSessionMonitor` 原先异步排队启动 Hook Socket 后立即启动 `SessionStore`，而 SessionStore 仅在首次启动恢复时扫描一次 Bridge 快照。若启动期 Hook 恰好先写快照、socket 发送失败，且扫描发生在快照落盘之前，该活动会话就可能一直缺失到应用再次启动。
+
+现在 Socket 启动提供完成回调，明确在监听器就绪（或启动失败）后报告结果；Monitor 收到该完成后再启动持久化恢复与状态轮询。这样，监听器建立前已写入的快照会在一次性扫描前落盘；失败路径也会触发恢复，并且如果 Monitor 已停止则不会迟到地重新启动 SessionStore。新增 PermissionRoutingTests 覆盖“回调时监听 socket 已可连接”和“socket 路径准备失败仍回调失败结果”；就绪回调测试先在旧实现上按超时失败，接入后通过。完整 macOS XCTest 为 `441 passed / 0 failed / 0 skipped`，并记录一条既有 `ProcessExecutorTests.swift` QoS 优先级反转运行时警告。
+
+这是本地源码与 XCTest 的时序证据，不代表真实 Agent Hook 压测、安装后 GUI 验收，也没有运行 Vibe Island 或 Boring Notch；本轮继续遵守用户选择的仅静态竞品分析范围。
+
 ### 本轮结论与下一候选
 
 Codex 原生提问已完成协议边界审查，但因为协议仍标记为 experimental 且当前 app-server 控制通道缺失，暂不实现。后续候选优先聚焦 Agent Notch 已有会话/审批状态的真实端到端验收与可靠性缺口；所有基于 Vibe Island、Boring Notch 的判断继续限于已留存的静态包证据、公开更新记录和 Boring Notch 源码，不能外推为运行时结论。

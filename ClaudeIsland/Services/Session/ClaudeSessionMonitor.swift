@@ -55,8 +55,9 @@ class ClaudeSessionMonitor: ObservableObject {
             }
         }
 
-        // Start accepting fresh hooks before disk restoration yields to parser
-        // I/O. SessionStore resolves the race by keeping the newest timestamp.
+        // Resolve the socket startup attempt before the one-time Bridge snapshot
+        // restore. A hook that beats the listener is persisted by the Bridge
+        // before its socket send fails; restoring after startup recovers it.
         HookSocketServer.shared.start(
             onEvent: { event in
                 continuation.yield(.hookReceived(event))
@@ -68,12 +69,16 @@ class ClaudeSessionMonitor: ObservableObject {
                     resolvedAt: resolvedAt,
                     requestID: requestID
                 ))
+            },
+            completion: { [weak self] _ in
+                // Restoration also runs when listening fails, so snapshots are
+                // still available while the regular status poll stays active.
+                Task { @MainActor [weak self] in
+                    guard let self, self.isMonitoring else { return }
+                    await SessionStore.shared.startPeriodicStatusCheck()
+                }
             }
         )
-
-        Task {
-            await SessionStore.shared.startPeriodicStatusCheck()
-        }
     }
 
     func stopMonitoring() {

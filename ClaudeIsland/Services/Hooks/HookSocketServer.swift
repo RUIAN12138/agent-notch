@@ -219,13 +219,32 @@ class HookSocketServer {
     }
 
     /// Start the socket server
-    func start(onEvent: @escaping HookEventHandler, onPermissionFailure: PermissionFailureHandler? = nil) {
+    func start(
+        onEvent: @escaping HookEventHandler,
+        onPermissionFailure: PermissionFailureHandler? = nil,
+        completion: (@Sendable (Bool) -> Void)? = nil
+    ) {
         queue.async { [weak self] in
-            self?.startServer(onEvent: onEvent, onPermissionFailure: onPermissionFailure)
+            guard let self else {
+                completion?(false)
+                return
+            }
+            self.startServer(
+                onEvent: onEvent,
+                onPermissionFailure: onPermissionFailure,
+                completion: completion
+            )
         }
     }
 
-    private func startServer(onEvent: @escaping HookEventHandler, onPermissionFailure: PermissionFailureHandler?) {
+    private func startServer(
+        onEvent: @escaping HookEventHandler,
+        onPermissionFailure: PermissionFailureHandler?,
+        completion: (@Sendable (Bool) -> Void)?
+    ) {
+        defer {
+            completion?(serverSocket >= 0 && acceptSource != nil)
+        }
         guard serverSocket < 0 else { return }
 
         eventHandler = onEvent
