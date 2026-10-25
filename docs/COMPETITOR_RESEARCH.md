@@ -271,3 +271,11 @@ REA 已留存的 Boring Notch `v2.7.3` arm64 Mach-O 依赖表包含 `MediaRemote
 产品决策：Agent Notch 的核心任务是 Agent 生命周期、权限与问题提醒，媒体卡片会增加一个与核心状态无关、且依赖系统版本 workaround 的活动源，本轮不接入。继续优先把 Vibe Island/Boring Notch 可迁移的“事件新旧边界、提醒优先级、短暂活动过期、可取消悬停任务”落实到生命周期状态机与测试。未来若明确需要媒体能力，再评估 BSD adapter 的打包、helper 失败恢复、macOS 版本矩阵和许可证归属；不能只因 Mach-O 链接了该框架就承诺可用。
 
 本轮同时复核 Agent Notch 的中途启动恢复：`SessionStoreWatcherRecoveryTests.testOfflineBridgeWorkingSessionRestartsWatcher`（离线 Bridge 中最新事件为 `PreToolUse/running_tool`）及两个 Hook Socket 启动完成回调用例共 3 项定向 XCTest 通过。这证明测试环境中的快照恢复和监听器就绪顺序，不替代真实 Agent Hook 压测或安装后 UI 验收。
+
+### 观察型 Agent 退出后的卡片清理（2026-10-25）
+
+Vibe Island `1.0.55` 官方更新日志称，自定义 Agent 的卡片会在其应用退出时清理；这是公开产品行为说明，不是私有实现或本机运行观察。[官方更新日志](https://vibeisland.app/changelog/)
+
+Agent Notch 已能通过现有进程检查器发现 Hook 所属 PID 退出，但此前无论来源是否具备消息/会话交互能力，都会统一转成 `ended` 并保留最近终态卡片最长 5 小时。对自定义 observer 和 Gemini 来说，进程退出意味着没有可返回的本地会话控制面，继续显示 Working/Ended 卡片会误导用户。现复用既有 `LifecycleReducer`、进程身份校验和跨重启移除边界：仅自定义来源与 Gemini 在精确 PID 退出后移除卡片；写入移除时间边界以拒绝更早的迟到 Hook，并允许严格更新的同会话活动事件恢复。Claude、Codex、CodeBuddy、Cursor 等交互型来源仍保留原有终态卡片。
+
+定向 XCTest 先在旧策略下复现回归，修复后覆盖 observer/Gemini 的移除裁决、自定义卡片删除、迟到 Hook 拒绝、较新 Hook 重启恢复，以及内置 Codex 仍保留 ended 状态。这是根据 Vibe Island 公布的产品结果做的独立生命周期决策，不声称复刻其内部实现；自动化结果也不代替真实外部 Agent 退出与已安装 UI 验收。

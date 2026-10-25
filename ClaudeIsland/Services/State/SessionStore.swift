@@ -1770,10 +1770,23 @@ actor SessionStore {
             previous: previous,
             transition: transition
         )
-        guard case .update(let snapshot) = transition.mutation else {
+        switch transition.mutation {
+        case .remove:
+            sessions.removeValue(forKey: sessionId)
+            cancelPendingSync(sessionId: sessionId)
+            recordRemovedSessionBoundary(sessionId, at: observedAt)
+            await cleanupExternalLifecycle(
+                sessionId: sessionId,
+                completedAt: observedAt
+            )
+            return
+
+        case .update(let snapshot):
+            snapshot.applying(to: &session)
+
+        case .create, .none:
             return
         }
-        snapshot.applying(to: &session)
         session.pid = nil
         finalizeDanglingTools(in: &session, terminalAt: session.completedAt ?? observedAt)
         sessions[sessionId] = session
@@ -2342,8 +2355,13 @@ actor SessionStore {
                         pid: pid,
                         observedAt: now
                     )
-                    stateChanged = sessions[sessionId]?.phase == .ended ||
-                        stateChanged
+                    if let remainingSession = sessions[sessionId] {
+                        if remainingSession.phase == .ended {
+                            stateChanged = true
+                        }
+                    } else {
+                        stateChanged = true
+                    }
                     continue
                 }
             }

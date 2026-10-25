@@ -17,12 +17,13 @@ final class LifecycleReducerTests: XCTestCase {
         receivedAt: Date,
         origin: LifecycleObservationOrigin = .codexPolling,
         requestedPhase: SessionPhase? = nil,
-        hookEventName: String? = nil
+        hookEventName: String? = nil,
+        source: AgentSource = .codex
     ) -> SessionLifecycleObservation {
         SessionLifecycleObservation(
             sessionId: "codex-session",
             cwd: "/tmp/project",
-            source: .codex,
+            source: source,
             origin: origin,
             evidence: evidence,
             requestedPhase: requestedPhase,
@@ -39,10 +40,11 @@ final class LifecycleReducerTests: XCTestCase {
         turnStartedAt: Date? = nil,
         codexToolExecutionStartedAt: Date? = nil,
         completedAt: Date? = nil,
-        completionWasStaleTimeout: Bool = false
+        completionWasStaleTimeout: Bool = false,
+        source: AgentSource = .codex
     ) -> SessionLifecycleSnapshot {
         SessionLifecycleSnapshot(
-            source: .codex,
+            source: source,
             phase: phase,
             lastActivity: lastActivity,
             createdAt: lastActivity,
@@ -1263,6 +1265,37 @@ final class LifecycleReducerTests: XCTestCase {
         let next = try XCTUnwrap(transition.nextSnapshot)
         XCTAssertEqual(next.phase, .ended)
         XCTAssertEqual(next.completedAt, exitedAt)
+    }
+
+    func testObservationOnlyProcessExitRemovesSession() throws {
+        let exitedAt = Date(timeIntervalSince1970: 22_100)
+        let sources = [
+            try XCTUnwrap(AgentSource(rawValue: "custom-coder")),
+            AgentSource.gemini,
+        ]
+
+        for source in sources {
+            let transition = reduce(
+                current: snapshot(
+                    lastActivity: exitedAt.addingTimeInterval(-1),
+                    source: source
+                ),
+                observation: observation(
+                    .processExited,
+                    observedAt: exitedAt,
+                    receivedAt: exitedAt,
+                    origin: .processMonitor,
+                    source: source
+                )
+            )
+
+            XCTAssertEqual(
+                transition.reason,
+                .observationSourceProcessExited,
+                "Expected \(source.rawValue) process exit to remove its card"
+            )
+            XCTAssertEqual(transition.mutation, .remove)
+        }
     }
 
     func testInterruptWatcherUsesSourceTimestamp() throws {

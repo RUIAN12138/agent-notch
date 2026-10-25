@@ -1510,6 +1510,66 @@ final class SessionStoreLifecycleTests: XCTestCase {
         XCTAssertNil(session.pid)
     }
 
+    func testObservationOnlyProcessExitRemovesCardAndRejectsLateHook() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "observer-process-exit-\(UUID().uuidString)"
+        let startedAt = Date().addingTimeInterval(-3)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PreToolUse",
+            status: "running_tool",
+            observedAt: startedAt,
+            source: "custom-coder",
+            pid: 41_001
+        )))
+        let activeSession = await store.session(for: sessionId)
+        let active = try XCTUnwrap(activeSession)
+        XCTAssertEqual(active.phase, .processing)
+
+        let exitedAt = startedAt.addingTimeInterval(1)
+        await store.process(.processExited(
+            sessionId: sessionId,
+            pid: 41_001,
+            observedAt: exitedAt
+        ))
+
+        var storedSession = await store.session(for: sessionId)
+        XCTAssertNil(storedSession)
+        let exitTrace = await store.lifecycleTrace(for: sessionId)
+        XCTAssertEqual(exitTrace.last?.reason, .observationSourceProcessExited)
+        XCTAssertEqual(exitTrace.last?.nextPhase, nil)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PreToolUse",
+            status: "running_tool",
+            observedAt: exitedAt.addingTimeInterval(-0.1),
+            source: "custom-coder",
+            pid: 41_001
+        )))
+        storedSession = await store.session(for: sessionId)
+        XCTAssertNil(storedSession)
+
+        let restartedAt = exitedAt.addingTimeInterval(1)
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PreToolUse",
+            status: "running_tool",
+            observedAt: restartedAt,
+            source: "custom-coder",
+            pid: 41_002
+        )))
+        storedSession = await store.session(for: sessionId)
+        let restarted = try XCTUnwrap(storedSession)
+        XCTAssertEqual(restarted.phase, .processing)
+        XCTAssertEqual(restarted.pid, 41_002)
+    }
+
     func testNativeTraceSamplingDoesNotDiscardHookDecisions() async {
         let store = SessionStore(
             persistenceEnabled: false,

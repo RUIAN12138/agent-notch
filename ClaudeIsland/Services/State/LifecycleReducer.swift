@@ -261,6 +261,7 @@ nonisolated enum LifecycleTransitionReason: String, Equatable, Sendable {
     case interruptAccepted
     case interruptOlderThanBoundary
     case processExitAccepted
+    case observationSourceProcessExited
 }
 
 nonisolated enum LifecycleTransitionMutation: Equatable, Sendable {
@@ -1276,8 +1277,9 @@ nonisolated enum LifecycleReducer {
         )
     }
 
-    /// SessionStore validates the exact PID before sending this observation,
-    /// so a matching local process exit is an authoritative terminal boundary.
+    /// SessionStore validates the exact PID before sending this observation.
+    /// Interactive sources retain a terminal card; observation-only agents
+    /// have no conversation surface to return to, so their card is removed.
     private static func reduceProcessExit(
         current: SessionLifecycleSnapshot?,
         observation: SessionLifecycleObservation
@@ -1286,6 +1288,13 @@ nonisolated enum LifecycleReducer {
             return LifecycleTransition(
                 mutation: .none,
                 reason: .sessionNotFound
+            )
+        }
+        if observation.source.isCustom ||
+            observation.source == .gemini {
+            return LifecycleTransition(
+                mutation: .remove,
+                reason: .observationSourceProcessExited
             )
         }
         let previous = next
