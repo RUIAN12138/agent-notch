@@ -20,12 +20,33 @@ class ClaudeSessionMonitor: ObservableObject {
     private var hookEventTask: Task<Void, Never>?
     private var hookEventContinuation: AsyncStream<SessionEvent>.Continuation?
     private var isMonitoring = false
+    private var sourceSessions: [SessionState] = []
 
     init() {
         SessionStore.shared.sessionsPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] sessions in
                 self?.updateFromSessions(sessions)
+            }
+            .store(in: &cancellables)
+
+        CodexAppServerQuestionBridge.shared.$activeRequestsBySession
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshPresentation()
+            }
+            .store(in: &cancellables)
+
+        NotchPreferences.shared.$codexNativeQuestionsEnabled
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self else { return }
+                CodexAppServerQuestionBridge.shared.reconcile(
+                    sessions: self.sourceSessions,
+                    enabled: enabled
+                )
+                self.refreshPresentation()
             }
             .store(in: &cancellables)
 
@@ -37,6 +58,7 @@ class ClaudeSessionMonitor: ObservableObject {
     func startMonitoring() {
         guard !isMonitoring else { return }
         isMonitoring = true
+        refreshPresentation()
 
         // HookSocketServer accepts connections on one serial queue, but
         // launching an unstructured Task for every callback does not preserve
@@ -92,6 +114,7 @@ class ClaudeSessionMonitor: ObservableObject {
         Task {
             await SessionStore.shared.stopPeriodicStatusCheck()
         }
+        CodexAppServerQuestionBridge.shared.disable()
     }
 
     // MARK: - Permission Handling
@@ -307,10 +330,27 @@ class ClaudeSessionMonitor: ObservableObject {
 
     private func updateFromSessions(_ sessions: [SessionState]) {
         InteractiveQuestionDraftStore.shared.reconcile(sessions: sessions)
+        sourceSessions = sessions
+        refreshPresentation()
+    }
+
+    private func refreshPresentation() {
+        let questionBridge = CodexAppServerQuestionBridge.shared
+        questionBridge.reconcile(
+            sessions: sourceSessions,
+            enabled: NotchPreferences.shared.codexNativeQuestionsEnabled
+        )
+        let sessions = sourceSessions.map { sourceSession -> SessionState in
+            CodexUserInputPresentation.session(
+                sourceSession,
+                request: questionBridge.request(for: sourceSession.sessionId)
+            )
+        }
         let now = Date()
         let active = sessions.filter {
-            $0.completedAt == nil &&
-                ($0.phase.isActive || $0.phase.isWaitingForApproval)
+            questionBridge.request(for: $0.sessionId) != nil ||
+                ($0.completedAt == nil &&
+                    ($0.phase.isActive || $0.phase.isWaitingForApproval))
         }
         let recentTerminal = sessions
             .filter { session in

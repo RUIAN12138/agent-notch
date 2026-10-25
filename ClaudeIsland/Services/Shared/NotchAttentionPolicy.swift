@@ -161,7 +161,8 @@ enum NotchAttentionPolicy {
         _ context: PermissionContext,
         expandQuestionsAutomatically: Bool
     ) -> Bool {
-        context.toolName != "AskUserQuestion" ||
+        (context.toolName != "AskUserQuestion" &&
+            context.toolName != CodexUserInputRequest.toolName) ||
             expandQuestionsAutomatically
     }
 

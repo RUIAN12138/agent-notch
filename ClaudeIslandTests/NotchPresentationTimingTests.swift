@@ -304,6 +304,14 @@ final class NotchPresentationTimingTests: XCTestCase {
             context("AskUserQuestion"),
             expandQuestionsAutomatically: true
         ))
+        XCTAssertFalse(NotchAttentionPolicy.shouldAutoExpandInteraction(
+            context(CodexUserInputRequest.toolName),
+            expandQuestionsAutomatically: false
+        ))
+        XCTAssertTrue(NotchAttentionPolicy.shouldAutoExpandInteraction(
+            context(CodexUserInputRequest.toolName),
+            expandQuestionsAutomatically: true
+        ))
         XCTAssertTrue(NotchAttentionPolicy.shouldAutoExpandInteraction(
             context("Bash"),
             expandQuestionsAutomatically: false

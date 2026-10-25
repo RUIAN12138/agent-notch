@@ -64,6 +64,7 @@ final class SessionRowPresentationTests: XCTestCase {
             (.compacting, .compacting),
             (request("Bash"), .approval),
             (request("AskUserQuestion"), .question),
+            (request(CodexUserInputRequest.toolName), .question),
             (request("ExitPlanMode"), .plan),
             (.waitingForInput, .ready),
             (.interrupted, .interrupted),

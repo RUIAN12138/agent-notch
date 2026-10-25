@@ -96,6 +96,22 @@ final class NotchSoundSettingsTests: XCTestCase {
         ), .question)
     }
 
+    func testCodexNativeQuestionUsesQuestionSoundCategory() async {
+        let suite = "NotchSoundTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("Ping", forKey: NotchSoundEvent.question.key)
+        defaults.set("Glass", forKey: NotchSoundEvent.approval.key)
+        let nativeQuestion = session(tool: CodexUserInputRequest.toolName, at: 102)
+
+        XCTAssertEqual(NotchSoundSettings.newestInteractionEvent(
+            in: [nativeQuestion],
+            excluding: [],
+            trackingStartedAt: Date(timeIntervalSince1970: 100),
+            defaults: defaults
+        ), .question)
+    }
+
     func testStartupAndObservedInteractionsDoNotReplayAfterUnmuting() async throws {
         let suite = "NotchSoundTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!

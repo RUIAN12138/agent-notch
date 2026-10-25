@@ -203,7 +203,7 @@ private struct TmuxAgentTransport: AgentTransport {
     }
 }
 
-private enum AgentExecutableLocator {
+enum AgentExecutableLocator {
     static func executablePath(named name: String) -> String? {
         let fileManager = FileManager.default
         let home = fileManager.homeDirectoryForCurrentUser.path

@@ -95,7 +95,8 @@ enum NotchSoundSettings {
                   !previousTokens.contains(token),
                   let context = session.activePermission,
                   context.receivedAt >= trackingStartedAt else { return nil }
-            let event: NotchSoundEvent = context.toolName == "AskUserQuestion"
+            let event: NotchSoundEvent = context.toolName == "AskUserQuestion" ||
+                context.toolName == CodexUserInputRequest.toolName
                 ? .question : .approval
             guard automaticSource(for: event, defaults: defaults) != nil else {
                 return nil

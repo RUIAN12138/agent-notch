@@ -62,6 +62,7 @@ struct NotchStudioSettingsView: View {
     @StateObject private var silenceRuleStore = NotchSilenceRuleStore.shared
     @ObservedObject private var screenSelector = ScreenSelector.shared
     @ObservedObject private var updateManager = UpdateManager.shared
+    @ObservedObject private var codexQuestionBridge = CodexAppServerQuestionBridge.shared
     @State private var selection: NotchStudioSection = .general
     @State private var launchAtLogin = false
     @State private var hooksInstalled = false
@@ -1035,6 +1036,29 @@ struct NotchStudioSettingsView: View {
                 }
                 .disabled(!preferences.usageLimitAlertsEnabled)
                 .opacity(preferences.usageLimitAlertsEnabled ? 1 : 0.45)
+            }
+
+            settingsCard {
+                settingToggle(
+                    t("Codex native questions (experimental)", "Codex 原生提问（实验性）"),
+                    detail: t(
+                        "Answer structured Codex questions in the notch. When enabled, Agent Notch only tries to attach to the already-running local Codex app-server; it never starts or restarts that service. If unavailable, answer in Codex.",
+                        "在刘海中回答 Codex 结构化提问。启用后仅尝试接入已运行的本地 Codex app-server，不会启动或重启服务；连接不可用时请回到 Codex 中作答。"
+                    ),
+                    isOn: $preferences.codexNativeQuestionsEnabled
+                )
+
+                Divider()
+
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(codexQuestionBridge.state == .connected ? TerminalColors.green : Color.white.opacity(0.3))
+                        .frame(width: 6, height: 6)
+                    Text(codexQuestionBridge.state.description(language: preferences.language))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("settings.codex.nativeQuestions.status")
             }
 
             HStack(spacing: 10) {

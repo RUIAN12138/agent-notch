@@ -246,6 +246,7 @@ final class NotchPreferences: ObservableObject {
         static let showUsageLimits = "notchShowUsageLimits"
         static let usageLimitAlertsEnabled = "notchUsageLimitAlertsEnabled"
         static let usageLimitAlertThreshold = "notchUsageLimitAlertThreshold"
+        static let codexNativeQuestionsEnabled = "notchCodexNativeQuestionsEnabled"
         static let language = "notchLanguage"
         static let compactStyle = "notchCompactStyle"
         static let compactWidth = "notchCompactWidth"
@@ -421,6 +422,17 @@ final class NotchPreferences: ObservableObject {
         }
     }
 
+    /// Experimental Codex question forwarding is opt-in because it attaches a
+    /// second client to the user's existing app-server thread.
+    @Published var codexNativeQuestionsEnabled: Bool {
+        didSet {
+            defaults.set(
+                codexNativeQuestionsEnabled,
+                forKey: Keys.codexNativeQuestionsEnabled
+            )
+        }
+    }
+
     @Published var usageLimitAlertThreshold: Int {
         didSet {
             let sanitized = UsageLimitAlertPolicy.sanitizedThreshold(
@@ -547,6 +559,8 @@ final class NotchPreferences: ObservableObject {
             defaults.object(forKey: Keys.showUsageLimits) as? Bool ?? true
         usageLimitAlertsEnabled =
             defaults.object(forKey: Keys.usageLimitAlertsEnabled) as? Bool ?? false
+        codexNativeQuestionsEnabled =
+            defaults.object(forKey: Keys.codexNativeQuestionsEnabled) as? Bool ?? false
         usageLimitAlertThreshold = UsageLimitAlertPolicy.sanitizedThreshold(
             defaults.object(forKey: Keys.usageLimitAlertThreshold) as? Int
                 ?? UsageLimitAlertPolicy.defaultThreshold

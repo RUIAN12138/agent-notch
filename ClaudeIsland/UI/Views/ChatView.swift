@@ -178,6 +178,7 @@ struct ChatView: View {
     let initialSession: SessionState
     let sessionMonitor: ClaudeSessionMonitor
     @ObservedObject var viewModel: NotchViewModel
+    @ObservedObject private var codexQuestionBridge = CodexAppServerQuestionBridge.shared
     @StateObject private var preferences = NotchPreferences.shared
 
     @State private var inputText: String = ""
@@ -253,7 +254,16 @@ struct ChatView: View {
                 }
 
                 // Approval bar, interactive prompt, or Input bar
-                if let permission = session.activePermission {
+                if let permission = session.activePermission,
+                   permission.toolName == CodexUserInputRequest.toolName,
+                   let request = codexQuestionBridge.request(for: sessionId) {
+                    codexUserInputPrompt(request)
+                        .id(request.uiToken)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
+                } else if let permission = session.activePermission {
                     let tool = permission.toolName
                     if tool == "AskUserQuestion" || tool == "ExitPlanMode" {
                         // Interactive tools - answer or review directly in the notch
@@ -270,6 +280,14 @@ struct ChatView: View {
                                 removal: .opacity
                             ))
                     }
+                } else if session.source == .codex,
+                   let request = codexQuestionBridge.request(for: sessionId) {
+                    codexUserInputPrompt(request)
+                        .id(request.uiToken)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
                 } else {
                     inputBar
                         .transition(.opacity)
@@ -883,6 +901,22 @@ struct ChatView: View {
     }
 
     // MARK: - Interactive Prompt Bar
+
+    private func codexUserInputPrompt(
+        _ request: CodexUserInputRequest
+    ) -> some View {
+        CodexUserInputPromptBar(
+            request: request,
+            isSubmitting: codexQuestionBridge.isSubmitting(request),
+            onSubmit: { answers in
+                codexQuestionBridge.answer(
+                    sessionID: sessionId,
+                    expectedToken: request.uiToken,
+                    answers: answers
+                )
+            }
+        )
+    }
 
     /// Native structured UI for questions and plan review.
     @ViewBuilder

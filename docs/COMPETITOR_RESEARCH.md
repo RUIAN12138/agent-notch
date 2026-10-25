@@ -180,7 +180,7 @@ Vibe Island 官方 `1.0.54` 更新记录声称，Claude 活动会话卡片现在
 
 本轮再补一条组合回归：审批队列首项被用户拒绝并附带反馈后，再收到该工具的迟到 `PostToolUseFailure`，首项保持失败，而后续审批仍留在队首且可见。定向 XCTest 通过；这是状态机测试，不代表真实 Agent Hook 回合或桌面 UI 验收。
 
-本仓库尚未发现 Codex 原生 `request_user_input` 交互的接收/应答集成，也没有 Codex 后台命令和端口控制面板。它们是值得评估的功能差距，但涉及新的 Codex 控制通道与用户可触发的命令/端口操作；在确认官方协议、权限边界、取消/失败/过期语义及真实端到端验收方案前，不从对方更新说明推演私有实现，也不直接接入。
+此前本仓库尚未发现 Codex 原生 `request_user_input` 交互的接收/应答集成。经本轮官方协议静态核验后，已新增一个默认关闭的实验性提问适配器，具体边界与未验证项见下文；Codex 后台命令和端口控制面板仍未实现，也不从竞品更新说明推演其私有实现。
 
 ### Boring Notch 当前公开发布列表
 
@@ -190,13 +190,19 @@ Vibe Island 官方 `1.0.54` 更新记录声称，Claude 活动会话卡片现在
 
 ### Codex 原生问题的协议边界核验
 
-Vibe Island `1.0.55` 的官方更新说明声称可以在刘海中回答 Codex 问题；这仍只是厂商功能说明，不证明其内部接入方式或本机运行行为。进一步核对 [OpenAI Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs) 后，`item/tool/requestUserInput` 是由服务端发起、标记为 experimental 的请求；它通过配对响应完成当前请求，而不是往会话里发送一条普通文本。对应的 [响应 JSON schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/ToolRequestUserInputResponse.json) 按问题 ID 返回答案数组。
+Vibe Island `1.0.55` 的官方更新说明声称可以在刘海中回答 Codex 问题；这仍只是厂商功能说明，不证明其内部接入方式或本机运行行为。进一步核对 [OpenAI Codex app-server protocol](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/common.rs) 后，`item/tool/requestUserInput` 是由服务端发起、标记为 experimental 的请求；它通过配对响应完成当前请求，而不是往会话里发送一条普通文本。对应的[响应 JSON schema](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/schema/json/ToolRequestUserInputResponse.json) 按问题 ID 返回对象，对象内的 `answers` 字段才是字符串数组。
 
 补充核对官方 app-server 实现后，发现可行路径比“协议没有控制通道”更具体：`thread/resume` 对同一 app-server 内仍运行的 `threadId` 会重新加入该线程；resume 完成后，服务端会把该线程尚未解决的 server request 重放给新连接。官方协议测试也验证了应答必须回传原 JSON-RPC `request_id`，answers 再按 question ID 映射，并在 turn 完成前收到 `serverRequest/resolved`。本地 Codex CLI 源码还提供 `app-server proxy`，将 stdio 转接到既有控制 socket；默认 socket 位于当前 `CODEX_HOME/app-server-control/app-server-control.sock`。参考：[thread resume 定义](https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/thread.rs)、[resume 请求重放实现](https://github.com/openai/codex/blob/main/codex-rs/app-server/src/request_processors/thread_lifecycle.rs)、[原生提问协议测试](https://github.com/openai/codex/blob/main/codex-rs/app-server/tests/suite/v2/request_user_input.rs)、[CLI proxy 与控制 socket](https://github.com/openai/codex/blob/main/codex-rs/cli/src/main.rs)。
 
-因此，真正的产品边界不是“绝对做不了”，而是 Agent Notch 目前尚未接入并确认自己连接的是正在承载该 Codex 会话的同一个 app-server。另起 `codex exec resume` 或启动第二个 app-server 都不能等价替代；错误的线程所有权/进程可能造成重复控制或会话竞争。并且该提问 schema 和 daemon 生命周期当前仍属实验性接口。后续若实现，应只尝试连接用户已经运行的本地服务、使用精确 thread/request/question ID 配对、处理 `serverRequest/resolved` 与取消/过期，不自动启动或重启 Codex 服务；缺少现有服务时保持观察/原 CLI 行为，不做伪应答。后台命令与端口操作仍暂缓，因其权限面和验收成本更大。
+因此，真正的产品边界不是“绝对做不了”，而是 Agent Notch 只能通过正在承载该 Codex 会话的同一个 app-server 接入。另起 `codex exec resume` 或启动第二个 app-server 都不能等价替代；错误的线程所有权/进程可能造成重复控制或会话竞争。该提问 schema 和 daemon 生命周期仍属实验性接口，必须只尝试连接用户已经运行的本地服务，使用精确 thread/request/question ID 配对，不自动启动或重启服务，也不以普通聊天文本伪答。后台命令与端口操作仍暂缓，因其权限面和验收成本更大。
 
-本轮只做官方协议/源码静态核验；没有启动 Vibe Island、Boring Notch、Codex app-server，也没有真实 Codex 桌面端到端验证。该接入路线是依据公开源码得出的可行性判断，仍需确认目标 Codex Desktop 版本实际使用的控制 socket 与线程所有权行为后才能实现。
+竞品与协议分析仍严格限于官方静态资料；没有启动 Vibe Island、Boring Notch 或连接 Codex app-server。下节实现只证明本地代码与公开 schema 对齐，目标 Codex Desktop 的实际控制 socket、线程所有权和真实回合行为仍未验证。
+
+### Codex 原生提问接入（默认关闭，实验性）
+
+本轮将上述候选收敛为一个默认关闭的实现：只有用户在设置中显式启用、且检测到活动 Codex 会话时，才运行 `codex app-server proxy` 并执行 initialize / `thread/resume`；不会启动或重启 Codex app-server，不调用 `codex exec resume` 发送伪造回答。resume 请求设置 `excludeTurns: true`，只请求线程元信息和活动状态，避免把完整历史装入第二个客户端。收到 `item/tool/requestUserInput` 后，刘海卡片按精确 server request ID、thread ID 和 question ID 提交答案；只接受已知选项或允许的自定义答案，支持保密输入，并仅在匹配的 `serverRequest/resolved` 到达后移除对应卡片。其他 server request 不做批准或拒绝，原 Codex 窗口仍是它们的决策入口。
+
+本地核验的 Codex CLI 为 `0.164.0`；只读取了 `codex app-server proxy --help`，确认该命令描述为转发到正在运行的控制 socket，未连接该 socket。新增协议/偏好/呈现策略测试覆盖 JSON-RPC ID 回传、嵌套答案 schema、请求去重、乱序身份隔离和默认关闭。该协议仍为 experimental；本轮没有连接真实 app-server、没有在真实 Codex 回合中验证请求重放/所有权，也没有完成独立 UI 运行验收。若 proxy、thread/resume 或请求配对失败，设置状态会显示不可用，用户需回 Codex 原窗口处理。
 
 本轮同时新增 `SessionStoreLifecycleTests.testSuspendedHistorySnapshotCannotOverrideNewerStopHook`，用注入的历史快照和可控异步闸门验证：旧用户消息快照在解析挂起期间遇到较新的 Stop Hook，之后恢复也不得把已完成会话重新判为 processing；XCTest 观察到 `.activeOlderThanHook`，完成时间保持 Hook 边界。本机生命周期套件及完整 macOS XCTest 均通过。此项是 Agent Notch 自身的状态时序回归测试，不是竞品运行观察或真实桌面验收。
 

@@ -33,7 +33,7 @@ struct SessionRowPresentation {
     var interaction: Interaction {
         guard case .waitingForApproval(let request) = session.phase else { return .none }
         switch request.toolName {
-        case "AskUserQuestion": return .question
+        case "AskUserQuestion", CodexUserInputRequest.toolName: return .question
         case "ExitPlanMode": return .plan
         default: return .toolApproval
         }
