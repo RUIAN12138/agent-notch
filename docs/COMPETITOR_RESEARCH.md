@@ -301,3 +301,11 @@ Boring Notch `v2.7.3` 的公开源码 `ContentView.handleHover` 会先取消旧�
 对照 Agent Notch，观察型来源在精确 PID 退出的第一次轮询就会立即删卡，无法容忍更新重启期间短暂的 PID 空窗。现改为先把卡片裁决为 `ended` 并记录移除时间边界，等待 2 秒后再清理；同一会话在边界之后到达的有效生命周期 Hook 会取消待清理任务、清除边界并按新事件恢复状态，边界之前的迟到 Hook 仍被拒绝。若应用确实退出且没有新生命周期证据，卡片在短暂 grace 后消失；时间边界继续阻止旧持久化快照或 Bridge 快照复活会话。
 
 回归覆盖 reducer 对自定义来源/Gemini 的 ended 裁决、进程退出后仍保留 ended 卡片、迟到事件不能取消清理、超时后删除，以及新 `PreToolUse` 在 grace 内到达时撤销删除并保持新 PID 的 processing 状态。该验证是本地状态机/XCTest 证据，未启动 Vibe Island 或 Boring Notch，也未验证真实更新重启过程和桌面 UI。
+
+### Vibe Island 1.0.55 最新公开功能核对（2026-10-25）
+
+Vibe Island 官方更新页目前列出的最新版本为 `1.0.55`（2026-10-23）。更新页称该版本支持在刘海回答 Codex 问题、默认关闭的后台命令/本地端口查看与操作、远程 Copilot CLI，以及把审批卡片调整为先说明操作意图，再展示完整命令；Claude 活动卡也显示当前步骤。[官方更新页](https://vibeisland.app/changelog/)。这些是厂商发布说明，不是本地 `1.0.55` 包的 REA 观察，也不证明内部实现。
+
+Agent Notch 已有默认关闭的 Codex 原生提问实验接入，并已实现处理中的当前步骤展示；目前没有后台命令/端口生命周期与停止操作。该功能暂不移植：列举端口和命令需要新的进程/网络监听数据源，而“一键停止”会扩大现有权限与进程控制面，不属于当前优先的状态可靠性收敛。审批卡方面，`ChatApprovalBar` 目前能显示工具名和有限长度的输入摘要；`PermissionContext` 没有独立的“操作理由”字段，所以不应从命令文本猜造理由。后续若接入来源明确提供的 rationale，应先保留来源字段并测试缺失/不可信内容的呈现，再调整卡片层级。
+
+本轮在当前工作树运行完整 macOS XCTest：466 passed、0 failed、0 skipped。Xcode 另记录 `ProcessExecutorTests.swift` 一条 QoS 优先级反转运行时警告；测试通过不等于真实 Hook 调度、实际进程/端口管理或已安装 UI 验收。
