@@ -261,3 +261,13 @@ Agent Notch 接受 `SessionEnd` / `SessionExpired` 后会删除会话及其生�
 本条是 Agent Notch 自身状态入口的源码发现，不是对 Vibe Island 或 Boring Notch 内部实现的推断。`Notification(auth_success)` 等普通信息事件没有目标会话状态迁移，但此前 `SessionStore.processHookEvent` 会先构造占位会话，再因为没有生命周期信号而将其保存，导致没有真实 Agent 回合的空闲卡片进入会话状态。
 
 现在新会话只会由有效生命周期信号建立；已存在的会话仍能收到普通信息事件，`Notification(idle_prompt)` 仍被视为完成信号。新增 `SessionStoreLifecycleTests.testInformationalNotificationCannotCreateSession` 先在旧实现上复现失败，修复后通知相关定向测试 3 passed；完整 macOS XCTest 为 439 passed、0 failed、0 skipped。Xcode 记录 `ProcessExecutorTests` 的 QoS 优先级反转运行时警告。以上是本地源代码与自动化状态测试证据，不是实际 Agent Hook 调度或桌面 UI 验收。
+
+### Now Playing 媒体能力：本轮不移植（2026-10-25）
+
+REA 已留存的 Boring Notch `v2.7.3` arm64 Mach-O 依赖表包含 `MediaRemoteAdapter.framework`（Evidence `ev_7a890069c239ac1ebb58f5727a28ebb1fc88577d4cb3d606bb4b0ba77a56390c`）。这只证明发行包链接该框架，不证明它在本机实际运行。Boring Notch 官方 README 将 MediaRemoteAdapter 列为 macOS 15.4+ Now Playing 来源的依赖；该 adapter 自己的 README 说明其方案通过 `/usr/bin/perl` 动态加载 helper framework，并称 macOS 15.4 起在应用内直接加载 MediaRemote 已不可用。后者是上游项目对其技术背景的说明，不是 Apple 对私有 API 的稳定性保证。
+
+上游近期发布记录仍在修复 Now Playing 可用性、回退与连接恢复；Boring Notch 用户 issue 也报告过来源消失、控制器失效或重启后恢复。这些 issue 是用户报告，未在本轮复现，不能视作已确认缺陷；但与依赖自身的系统版本 workaround 一起，说明这不是低维护的即插即用能力。MediaRemoteAdapter 单独采用 BSD-3-Clause，而 Boring Notch 项目为 GPL-3.0；Agent Notch 保持 Apache-2.0 边界，不复制 Boring Notch 源码。
+
+产品决策：Agent Notch 的核心任务是 Agent 生命周期、权限与问题提醒，媒体卡片会增加一个与核心状态无关、且依赖系统版本 workaround 的活动源，本轮不接入。继续优先把 Vibe Island/Boring Notch 可迁移的“事件新旧边界、提醒优先级、短暂活动过期、可取消悬停任务”落实到生命周期状态机与测试。未来若明确需要媒体能力，再评估 BSD adapter 的打包、helper 失败恢复、macOS 版本矩阵和许可证归属；不能只因 Mach-O 链接了该框架就承诺可用。
+
+本轮同时复核 Agent Notch 的中途启动恢复：`SessionStoreWatcherRecoveryTests.testOfflineBridgeWorkingSessionRestartsWatcher`（离线 Bridge 中最新事件为 `PreToolUse/running_tool`）及两个 Hook Socket 启动完成回调用例共 3 项定向 XCTest 通过。这证明测试环境中的快照恢复和监听器就绪顺序，不替代真实 Agent Hook 压测或安装后 UI 验收。
