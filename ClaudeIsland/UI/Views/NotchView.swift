@@ -151,6 +151,17 @@ struct NotchView: View {
         )
     }
 
+    /// All status surfaces use the same priority so concurrent sessions do
+    /// not show a completion cue beside an active processing indicator.
+    private var compactAttentionState: NotchAttentionPresentationState {
+        NotchAttentionPolicy.presentationState(
+            hasPendingPermission: hasPendingPermission,
+            isProcessing: isAnyProcessing,
+            hasCompletion:
+                hasWaitingForInput || hasRecentSubagentCompletion
+        )
+    }
+
     private var compactTaskCount: Int {
         sessionMonitor.instances.filter {
             $0.completedAt == nil &&
@@ -213,18 +224,8 @@ struct NotchView: View {
             leftWingWidth +
             rightWingWidth
 
-        // Expand for processing activity
-        if isAnyProcessing {
-            return compactBaseWidth
-        }
-
-        // Expand for pending permissions (left indicator) or waiting for input (checkmark on right)
-        if hasPendingPermission {
-            return compactBaseWidth
-        }
-
-        // Waiting for input just shows checkmark on right, no extra left indicator
-        if hasWaitingForInput || hasRecentSubagentCompletion {
+        // All non-idle states share the same compact activity width.
+        if compactAttentionState != .idle {
             return compactBaseWidth
         }
 
@@ -463,24 +464,25 @@ struct NotchView: View {
 
     // MARK: - Notch Layout
 
-    private var isProcessing: Bool {
-        isAnyProcessing
-    }
-
     /// Whether to show the expanded closed state (processing, pending permission, or waiting for input)
     private var showClosedActivity: Bool {
-        isProcessing ||
-            hasPendingPermission ||
-            hasWaitingForInput ||
-            hasRecentSubagentCompletion ||
+        compactAttentionState != .idle ||
             preferences.idleBehavior == .alwaysVisible
     }
 
     private var petMotion: VibePetMotion {
-        if hasPendingPermission { return .waiting }
-        if hasWaitingForInput { return .ready }
-        if isProcessing { return .working }
-        return .idle
+        switch compactAttentionState {
+        case .permission:
+            return .waiting
+        case .processing:
+            return .working
+        case .completion:
+            // Subagent completion uses a static checkmark; do not add a new
+            // looping pet animation for that compact reminder.
+            return hasWaitingForInput ? .ready : .idle
+        case .idle:
+            return .idle
+        }
     }
 
     @ViewBuilder
@@ -561,7 +563,7 @@ struct NotchView: View {
                         )
                     }
 
-                    if hasPendingPermission {
+                    if compactAttentionState == .permission {
                         WaitingPixelIndicatorIcon(
                             size:
                                 CompactNotchMetrics
@@ -583,7 +585,7 @@ struct NotchView: View {
                                 in: activityNamespace,
                                 isSource: showClosedActivity
                             )
-                    } else if isProcessing {
+                    } else if compactAttentionState == .processing {
                         PixelLoaderIcon(
                             size:
                                 CompactNotchMetrics
@@ -605,8 +607,7 @@ struct NotchView: View {
                                 in: activityNamespace,
                                 isSource: showClosedActivity
                             )
-                    } else if hasWaitingForInput ||
-                                hasRecentSubagentCompletion {
+                    } else if compactAttentionState == .completion {
                         ReadyForInputIndicatorIcon(
                             size: 9 * compactAnimationScale,
                             color: TerminalColors.green
@@ -831,16 +832,15 @@ struct NotchView: View {
                 Spacer()
 
                 Group {
-                    if hasPendingPermission {
+                    if compactAttentionState == .permission {
                         WaitingPixelIndicatorIcon(
                             size: CompactNotchMetrics.openedAnimationSize
                         )
-                    } else if isProcessing {
+                    } else if compactAttentionState == .processing {
                         PixelLoaderIcon(
                             size: CompactNotchMetrics.openedAnimationSize
                         )
-                    } else if hasWaitingForInput ||
-                                hasRecentSubagentCompletion {
+                    } else if compactAttentionState == .completion {
                         ReadyForInputIndicatorIcon(
                             size: 20,
                             color: TerminalColors.green
@@ -913,30 +913,28 @@ struct NotchView: View {
             delayedUIWork.visibilityTask?.cancel()
             delayedUIWork.visibilityTask = nil
             isVisible = true
-        } else if !isAnyProcessing &&
-                  !hasPendingPermission &&
-                  !hasWaitingForInput &&
-                  !hasRecentSubagentCompletion &&
+        } else if compactAttentionState == .idle &&
                   viewModel.status == .closed {
             isVisible = false
         }
     }
 
     private func handleProcessingChange() {
-        if isAnyProcessing || hasPendingPermission {
+        switch compactAttentionState {
+        case .permission, .processing:
             delayedUIWork.visibilityTask?.cancel()
             delayedUIWork.visibilityTask = nil
             // Show claude activity when processing or waiting for permission
             activityCoordinator.showActivity(type: .claude)
             isVisible = true
-        } else if hasWaitingForInput || hasRecentSubagentCompletion {
+        case .completion:
             delayedUIWork.visibilityTask?.cancel()
             delayedUIWork.visibilityTask = nil
             // Keep the compact completion cue visible without a processing
             // spinner.
             activityCoordinator.hideActivity()
             isVisible = true
-        } else {
+        case .idle:
             // Hide activity when done
             activityCoordinator.hideActivity()
 
@@ -1667,10 +1665,7 @@ struct NotchView: View {
             guard !Task.isCancelled else { return }
             delayedUIWork.visibilityTask = nil
             if viewModel.status == .closed &&
-               !isAnyProcessing &&
-               !hasPendingPermission &&
-               !hasWaitingForInput &&
-               !hasRecentSubagentCompletion {
+               compactAttentionState == .idle {
                 isVisible = false
             }
         }

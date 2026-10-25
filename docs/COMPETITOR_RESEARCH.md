@@ -84,6 +84,12 @@ Vibe Island 的本地化帮助文案写明：Agent 所在的终端标签页处�
 
 子 Agent 完成提示随后补上了持久的紧凑态勾号：从 Hook 的真实完成时间开始计算现有停留期限；更晚的新完成会顺延期限，偏好时长变化和视图重新出现会重设可取消计时器。待处理审批和仍在运行的 Agent 指示优先；没有加入新的循环动效。新增截止边界回归后，`SubagentCompletionAttentionTests` 为 18 passed，完整 macOS XCTest 为 484 passed / 0 failed / 0 skipped。完整套件报告一条来自 `ProcessExecutorTests.swift` 的 QoS 优先级反转运行时警告；仍未进行安装后 GUI 验收，竞品仍只做静态分析。
 
+### 并发会话的状态显示优先级
+
+Boring Notch `v2.8-rc.1` 源码将通知和音乐作为有序短暂活动；新通知进入前台，过期后从列表自然退出，底层活动恢复显示。此结论仅来自该预发布 tag 的公开源码，不是 REA 检查过的 `v2.7.3` 安装包行为，也不是运行观察。[源码](https://github.com/TheBoredTeam/boring.notch/blob/v2.8-rc.1/boringNotch/ContentView.swift#L2335-L2353)
+
+Agent Notch 的 `petMotion` 与紧凑/展开状态图标此前使用了不同条件顺序：当会话 A 等待输入、会话 B 仍在处理时，勾号/转圈按 processing 优先，但宠物按 waiting-for-input 优先，画面可能同时表达“已就绪”和“仍在运行”。现在用同一个优先级裁决结果驱动宠物、状态图标、紧凑宽度与活动可见性：权限 → 运行中 → 完成 → 空闲。子 Agent 的完成勾号仍保持静态，不会启动新的宠物循环动画。新增矩阵测试锁定权限、运行和完成同时出现时的裁决；`NotchPresentationTimingTests` 为 17 passed，完整 macOS XCTest 为 485 passed / 0 failed / 0 skipped。完整套件记录了 `ProcessExecutorTests.swift` 的 QoS priority-inversion runtime warnings；针对性测试记录了 `com.apple.linkd.autoShortcut` 服务连接警告，测试均通过。这些是本地逻辑/托管测试结果，不代表实际桌面 GUI 验收。
+
 ## 完成提醒过期与待处理交互竞争
 
 继续审计提醒优先级时发现：完成通知面板的收起计时若在审批/自动展开问题仍待处理时到期，会正确让高优先级交互继续显示，但旧逻辑同时清除了完成通知的截止时间。若该交互随后从别处解决，通知所有权的面板就没有剩余计时器可收起。

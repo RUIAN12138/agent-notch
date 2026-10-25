@@ -52,6 +52,28 @@ final class NotchPresentationTimingTests: XCTestCase {
         )
     }
 
+    func testAttentionPresentationUsesConsistentPriorityForConcurrentStates() {
+        func state(
+            permission: Bool = false,
+            processing: Bool = false,
+            completion: Bool = false
+        ) -> NotchAttentionPresentationState {
+            NotchAttentionPolicy.presentationState(
+                hasPendingPermission: permission,
+                isProcessing: processing,
+                hasCompletion: completion
+            )
+        }
+
+        XCTAssertEqual(
+            state(permission: true, processing: true, completion: true),
+            .permission
+        )
+        XCTAssertEqual(state(processing: true, completion: true), .processing)
+        XCTAssertEqual(state(completion: true), .completion)
+        XCTAssertEqual(state(), .idle)
+    }
+
     func testDeferredHoverCannotReplaceAlreadyOpenedClickPresentation() async {
         XCTAssertFalse(
             NotchViewModel.shouldPerformDeferredHoverOpen(

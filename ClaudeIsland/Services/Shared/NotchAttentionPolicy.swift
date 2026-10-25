@@ -70,7 +70,25 @@ enum NotchSubagentCompletionDisposition: Equatable {
     case discard
 }
 
+enum NotchAttentionPresentationState: Equatable {
+    case permission
+    case processing
+    case completion
+    case idle
+}
+
 enum NotchAttentionPolicy {
+    static func presentationState(
+        hasPendingPermission: Bool,
+        isProcessing: Bool,
+        hasCompletion: Bool
+    ) -> NotchAttentionPresentationState {
+        if hasPendingPermission { return .permission }
+        if isProcessing { return .processing }
+        if hasCompletion { return .completion }
+        return .idle
+    }
+
     static func shouldSuppressAutomaticExpansion(
         suppressWhenTerminalFrontmost: Bool,
         terminalIsFrontmost: Bool
