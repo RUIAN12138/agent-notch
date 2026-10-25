@@ -549,6 +549,77 @@ final class SessionStoreLifecycleTests: XCTestCase {
         )
     }
 
+    func testImplausiblyFutureHookTimestampCannotReviveCompletedSession() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "future-hook-after-completion-\(UUID().uuidString)"
+        let promptAt = Date().addingTimeInterval(-4)
+        let stoppedAt = promptAt.addingTimeInterval(1)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: promptAt,
+            source: "claude"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "Stop",
+            status: "waiting_for_input",
+            observedAt: stoppedAt,
+            source: "claude"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PreToolUse",
+            status: "running_tool",
+            observedAt: Date().addingTimeInterval(6 * 60),
+            tool: "Bash",
+            toolUseId: "future-tool-use",
+            source: "claude"
+        )))
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertEqual(session.phase, .waitingForInput)
+        XCTAssertEqual(
+            try XCTUnwrap(session.completedAt).timeIntervalSince1970,
+            stoppedAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(session.lastHookEventAt).timeIntervalSince1970,
+            stoppedAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+    }
+
+    func testImplausiblyFutureHookTimestampCannotCreateSession() async {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "future-hook-new-session-\(UUID().uuidString)"
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PreToolUse",
+            status: "running_tool",
+            observedAt: Date().addingTimeInterval(6 * 60),
+            tool: "Bash",
+            toolUseId: "future-tool-use",
+            source: "claude"
+        )))
+
+        let session = await store.session(for: sessionId)
+        XCTAssertNil(session)
+    }
+
     func testAncientHookTimestampCannotCreateSession() async {
         let store = SessionStore(
             persistenceEnabled: false,
@@ -582,7 +653,7 @@ final class SessionStoreLifecycleTests: XCTestCase {
         )
 
         XCTAssertTrue(
-            event.hasImplausiblyOldLifecycleTimestamp(receivedAt: receivedAt)
+            event.hasImplausibleLifecycleTimestamp(receivedAt: receivedAt)
         )
         XCTAssertEqual(
             event.lifecycleObservedDate(receivedAt: receivedAt)

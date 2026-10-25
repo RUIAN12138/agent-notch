@@ -213,17 +213,20 @@ extension HookEvent {
         return Date(timeIntervalSince1970: observedAt)
     }
 
-    /// Source timestamps older than this cannot safely describe a live Hook
-    /// transition. Keep this check separate from timestamp normalization so a
-    /// stale event is ignored rather than made newer than the current turn.
-    nonisolated func hasImplausiblyOldLifecycleTimestamp(
+    /// Source timestamps outside this window cannot safely describe a live
+    /// Hook transition. Keep this check separate from timestamp normalization
+    /// so malformed timing cannot be promoted to the receipt time and become a
+    /// newer lifecycle event.
+    nonisolated func hasImplausibleLifecycleTimestamp(
         receivedAt: Date = Date()
     ) -> Bool {
         guard let observedAt,
               observedAt.isFinite else {
             return false
         }
-        return observedAt < receivedAt.timeIntervalSince1970 - 24 * 60 * 60
+        let receiptTimestamp = receivedAt.timeIntervalSince1970
+        return observedAt < receiptTimestamp - 24 * 60 * 60
+            || observedAt > receiptTimestamp + 5 * 60
     }
 
     /// Determine the target session phase based on this hook event. Informational
