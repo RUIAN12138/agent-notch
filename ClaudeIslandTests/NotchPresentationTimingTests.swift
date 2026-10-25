@@ -101,6 +101,28 @@ final class NotchPresentationTimingTests: XCTestCase {
         )
     }
 
+    func testQueuedStatusDeliveryCannotTargetANewerPresentation() {
+        let staleOpen = NotchStatusDelivery(
+            status: .opened,
+            presentationGeneration: 4
+        )
+
+        // A status-only check would accept this callback after a quick
+        // close/reopen because both the old and new values are `.opened`.
+        XCTAssertFalse(staleOpen.matchesCurrentPresentation(
+            status: .opened,
+            generation: 5
+        ))
+        XCTAssertFalse(staleOpen.matchesCurrentPresentation(
+            status: .closed,
+            generation: 4
+        ))
+        XCTAssertTrue(staleOpen.matchesCurrentPresentation(
+            status: .opened,
+            generation: 4
+        ))
+    }
+
     func testMouseLeaveOnlyCollapsesHoverOwnedPresentation() async {
         XCTAssertTrue(
             NotchViewModel.shouldAutoCollapseOnPointerExit(

@@ -99,10 +99,23 @@ class NotchWindowController: NSWindowController {
         // - Closed: ignoresMouseEvents = true (clicks pass through to menu bar/apps)
         // - Opened: ignoresMouseEvents = false (buttons inside panel work)
         viewModel.$status
+            // Capture the generation before receive(on:) queues delivery. A
+            // status-only check can mistake an old `.opened` publication for
+            // a fast close/reopen and schedule focus work for the new panel.
+            .map { status in
+                NotchStatusDelivery(
+                    status: status,
+                    presentationGeneration: self.viewModel.presentationGeneration
+                )
+            }
             .receive(on: DispatchQueue.main)
-            .sink { [weak notchWindow, weak viewModel] status in
-                guard let viewModel, viewModel.status == status else { return }
-                switch status {
+            .sink { [weak notchWindow, weak viewModel] delivery in
+                guard let viewModel,
+                      delivery.matchesCurrentPresentation(
+                        status: viewModel.status,
+                        generation: viewModel.presentationGeneration
+                      ) else { return }
+                switch delivery.status {
                 case .opened:
                     guard notchWindow?.allowsPresentationOnCurrentSpace == true else {
                         viewModel.notchClose()
@@ -122,7 +135,7 @@ class NotchWindowController: NSWindowController {
                     notchWindow?.orderFrontRegardless()
                     notchWindow?.makeKey()
 
-                    let generation = viewModel.presentationGeneration
+                    let generation = delivery.presentationGeneration
                     let postInteractive = { [weak viewModel] in
                         guard notchWindow?.isVisible == true,
                               notchWindow?.allowsPresentationOnCurrentSpace == true,

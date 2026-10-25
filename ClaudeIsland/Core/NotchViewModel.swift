@@ -16,6 +16,21 @@ enum NotchStatus: Equatable {
     case popping
 }
 
+/// Immutable identity captured when a status publication is emitted. AppKit
+/// delivery is queued onto the main run loop, so the same status can already
+/// belong to a newer presentation by the time its callback is handled.
+struct NotchStatusDelivery: Equatable {
+    let status: NotchStatus
+    let presentationGeneration: Int
+
+    func matchesCurrentPresentation(
+        status currentStatus: NotchStatus,
+        generation currentGeneration: Int
+    ) -> Bool {
+        status == currentStatus && presentationGeneration == currentGeneration
+    }
+}
+
 enum NotchOpenReason: Equatable {
     case click
     case keyboard
