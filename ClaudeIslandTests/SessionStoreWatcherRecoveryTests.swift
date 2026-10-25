@@ -327,7 +327,11 @@ final class SessionStoreWatcherRecoveryTests: XCTestCase {
         // Simulate a crash between the durable removal marker and rewriting
         // the ordinary active-session snapshot: the previous active row is
         // still on disk, and the offline bridge file contains an older event.
-        let persistedTimestamp = ISO8601DateFormatter().string(from: startAt)
+        // A stale snapshot with a future wall-clock value must not outrank
+        // the durable removal marker after a restart.
+        let persistedTimestamp = ISO8601DateFormatter().string(
+            from: Date().addingTimeInterval(6 * 60)
+        )
         try fixture.writeJSON([[
             "sessionId": fixture.id, "cwd": fixture.root.path,
             "projectName": "recovery-fixture", "source": "claude",

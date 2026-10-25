@@ -47,6 +47,43 @@ actor SessionStore {
         // Numeric seconds preserve subsecond ordering; the legacy ISO-8601
         // date strategy rounds Date fields to seconds during persistence.
         let toolTerminalBoundaryAt: TimeInterval?
+
+        /// Wall-clock changes or older buggy writers can leave timestamps in
+        /// the future. A disk snapshot is not live lifecycle evidence, so it
+        /// must not keep a card "recent" until the clock catches up.
+        func clampingFutureTimestamps(to now: Date) -> Self {
+            func clampedDate(_ date: Date?) -> Date? {
+                guard let date, date > now else { return date }
+                return now
+            }
+            func clampedTimestamp(_ timestamp: TimeInterval?) -> TimeInterval? {
+                guard let timestamp, timestamp > now.timeIntervalSince1970 else {
+                    return timestamp
+                }
+                return now.timeIntervalSince1970
+            }
+
+            return Self(
+                sessionId: sessionId,
+                cwd: cwd,
+                projectName: projectName,
+                source: source,
+                pid: pid,
+                tty: tty,
+                phase: phase,
+                lastActivity: clampedDate(lastActivity) ?? now,
+                createdAt: clampedDate(createdAt) ?? now,
+                lastHookEventAt: clampedDate(lastHookEventAt),
+                lastCodexTurnStartedAt: clampedDate(lastCodexTurnStartedAt),
+                completedAt: clampedDate(completedAt),
+                completionWasStaleTimeout: completionWasStaleTimeout,
+                subagentAgents: subagentAgents,
+                subagentTurnHadAgents: subagentTurnHadAgents,
+                subagentTurnStartedAt: clampedTimestamp(subagentTurnStartedAt),
+                subagentRootStoppedAt: clampedTimestamp(subagentRootStoppedAt),
+                toolTerminalBoundaryAt: clampedTimestamp(toolTerminalBoundaryAt)
+            )
+        }
     }
 
     /// Durable ordering boundary for sessions explicitly removed by an Agent
@@ -2976,16 +3013,22 @@ actor SessionStore {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
-        guard let persisted = try? decoder.decode([PersistedSession].self, from: data) else {
+        guard let decodedPersisted = try? decoder.decode(
+            [PersistedSession].self,
+            from: data
+        ) else {
             Self.logger.warning("Ignoring unreadable active session snapshot")
             return
         }
 
+        let now = Date()
+        let persisted = decodedPersisted.map {
+            $0.clampingFutureTimestamps(to: now)
+        }
         let processTree = ProcessTreeBuilder.shared.buildTree()
         var restoredCount = 0
         var restoredActiveSessions: [(sessionId: String, cwd: String)] = []
 
-        let now = Date()
         let retainedTerminalIds = Set(
             persisted
                 .filter { item in
@@ -3013,7 +3056,8 @@ actor SessionStore {
                 .prefix(SessionRetentionPolicy.maximumVisibleCompleted)
                 .map(\.sessionId)
         )
-        for item in persisted where !sessions.keys.contains(item.sessionId) {
+        for rawItem in decodedPersisted where !sessions.keys.contains(rawItem.sessionId) {
+            let item = rawItem.clampingFutureTimestamps(to: now)
             let source = AgentSource(rawValue: item.source) ?? .unknown
             if SessionRetentionPolicy.isIgnoredProbe(
                 source: source,
@@ -3030,9 +3074,13 @@ actor SessionStore {
                     item.lastCodexTurnStartedAt ?? .distantPast
                 )
             )
-            if let removedAt = removedSessionBoundaries[item.sessionId],
-               persistedEvidenceAt <= removedAt {
-                continue
+            if let removedAt = removedSessionBoundaries[item.sessionId] {
+                let hasFutureEvidence = rawItem.lastActivity > now ||
+                    rawItem.lastHookEventAt.map { $0 > now } == true ||
+                    rawItem.lastCodexTurnStartedAt.map { $0 > now } == true
+                guard !hasFutureEvidence, persistedEvidenceAt > removedAt else {
+                    continue
+                }
             }
 
             let livePid = item.pid.flatMap {

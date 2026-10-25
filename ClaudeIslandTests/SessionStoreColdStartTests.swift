@@ -461,4 +461,57 @@ final class SessionStoreColdStartTests: XCTestCase {
         XCTAssertEqual(timedOut?.phase, .processing)
         XCTAssertNil(timedOut?.completedAt)
     }
+
+    func testColdStartClampsFuturePersistedCompletionToRestoreTime() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-notch-future-completion-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let futureCompletion = now.addingTimeInterval(6 * 60)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let persistenceURL = root.appendingPathComponent("active-sessions.json")
+        let persisted: [[String: Any]] = [[
+            "sessionId": "future-completion-\(UUID().uuidString)",
+            "cwd": root.path,
+            "projectName": "future-completion",
+            "source": "codex",
+            "phase": "waiting_for_input",
+            "lastActivity": formatter.string(from: futureCompletion),
+            "createdAt": formatter.string(from: now.addingTimeInterval(-60)),
+            "completedAt": formatter.string(from: futureCompletion)
+        ]]
+        try JSONSerialization.data(withJSONObject: persisted).write(to: persistenceURL)
+
+        let store = SessionStore(
+            persistenceEnabled: true,
+            fileSyncEnabled: false,
+            conversationParser: ConversationParser(
+                codexSessionsRoot: root.appendingPathComponent("codex", isDirectory: true)
+            ),
+            statusCheckIntervalSeconds: 30,
+            persistenceURL: persistenceURL,
+            bridgeSnapshotDirectory: root.appendingPathComponent("bridge", isDirectory: true)
+        )
+        await store.startPeriodicStatusCheck()
+        defer { Task { await store.stopPeriodicStatusCheck() } }
+
+        let deadline = Date().addingTimeInterval(3)
+        var restored: SessionState?
+        while Date() < deadline {
+            let sessions = await store.allSessions()
+            restored = sessions.first { $0.projectName == "future-completion" }
+            if restored != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+
+        let completedAt = try XCTUnwrap(restored?.completedAt)
+        let restoredAt = Date()
+        XCTAssertEqual(restored?.phase, .waitingForInput)
+        XCTAssertLessThanOrEqual(completedAt, restoredAt)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(restored?.lastActivity), restoredAt)
+        XCTAssertGreaterThanOrEqual(completedAt, now.addingTimeInterval(-1))
+    }
 }

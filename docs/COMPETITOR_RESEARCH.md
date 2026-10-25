@@ -337,3 +337,11 @@ Agent Notch 自身的 `HookEvent.lifecycleObservedDate` 原先把“比接收时
 静态参考仍保持边界：Boring Notch `v2.7.3` [源码](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/boringNotch/ContentView.swift#L2459-L2520)在悬停延迟执行前取消旧任务并复核当前指针/视图状态，可作为“异步状态变化必须按执行时事实复核”的设计参考；Vibe Island DMG 的设置文案只能证明存在完成展开/停留时长选项，不能证明其运行时状态裁决。竞品应用均未启动。
 
 新增 `SessionStoreLifecycleTests.testImplausiblyFutureHookTimestampCannotReviveCompletedSession`、`testImplausiblyFutureHookTimestampCannotCreateSession` 和 `testFutureDatedInteractivePermissionUsesReceiptTime`。新的审批用例先在旧策略下失败（状态层没有创建 session），修复后通过。完整 macOS XCTest 为 477 passed、0 failed、0 skipped；Xcode 报告 `LifecycleDiagnosticsTests`、`ProcessExecutorTests`、`TmuxTargetFinderTests` 有 QoS 优先级反转警告。以上是本地源代码和 XCTest 证据，不替代真实 Hook 调度、审批端到端或 GUI 验收。
+
+### 冷启动快照的未来时间不能延长状态（2026-10-25）
+
+这是 Agent Notch 自身的恢复时序问题，不归因于 Vibe Island 或 Boring Notch。Hook 入口已限制异常时间戳，但持久化快照恢复此前直接使用未来的 `completedAt`、`lastActivity` 等日期计算卡片保留和缺失会话宽限期。复现测试将完成时间设为未来 6 分钟；旧实现会把该值原样恢复，使它看起来比实际恢复时刻还新。
+
+现在从磁盘恢复时统一将晚于恢复时刻的日期钳制到恢复时刻，并覆盖 Hook/回合时间及子 Agent、工具边界的数值时间戳；移除会话墓碑仍以原始时间证据校验，未来快照值不能越过墓碑。新增 `SessionStoreColdStartTests.testColdStartClampsFuturePersistedCompletionToRestoreTime`，先在旧实现下失败，修复后通过。完整 macOS XCTest 为 478 passed、0 failed、0 skipped；Xcode 记录 `LifecycleDiagnosticsTests` 一条 QoS 优先级反转运行时警告。
+
+这验证的是本地冷启动快照恢复，不证明真实 Agent 时钟漂移、外部 Hook 延迟或安装后 UI。Vibe Island 与 Boring Notch 仍仅作静态分析，未启动应用。
