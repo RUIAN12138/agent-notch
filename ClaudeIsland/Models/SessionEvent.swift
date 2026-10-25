@@ -213,11 +213,11 @@ extension HookEvent {
         return Date(timeIntervalSince1970: observedAt)
     }
 
-    /// Source timestamps outside this window cannot safely describe a live
-    /// Hook transition. Keep this check separate from timestamp normalization
-    /// so malformed timing cannot be promoted to the receipt time and become a
-    /// newer lifecycle event.
-    nonisolated func hasImplausibleLifecycleTimestamp(
+    /// Reject source timestamps outside the trusted window, except for a
+    /// synchronous interactive request. Its open response socket means an
+    /// agent is currently waiting, so a far-future timestamp can safely fall
+    /// back to receipt time without dropping the approval/question card.
+    nonisolated func shouldRejectForImplausibleLifecycleTimestamp(
         receivedAt: Date = Date()
     ) -> Bool {
         guard let observedAt,
@@ -225,8 +225,10 @@ extension HookEvent {
             return false
         }
         let receiptTimestamp = receivedAt.timeIntervalSince1970
-        return observedAt < receiptTimestamp - 24 * 60 * 60
-            || observedAt > receiptTimestamp + 5 * 60
+        guard observedAt >= receiptTimestamp - 24 * 60 * 60 else {
+            return true
+        }
+        return observedAt > receiptTimestamp + 5 * 60 && !expectsResponse
     }
 
     /// Determine the target session phase based on this hook event. Informational

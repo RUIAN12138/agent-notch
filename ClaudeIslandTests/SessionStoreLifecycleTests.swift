@@ -620,6 +620,42 @@ final class SessionStoreLifecycleTests: XCTestCase {
         XCTAssertNil(session)
     }
 
+    func testFutureDatedInteractivePermissionUsesReceiptTime() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "future-permission-request-\(UUID().uuidString)"
+        let event = hook(
+            sessionId: sessionId,
+            event: "PermissionRequest",
+            status: "waiting_for_approval",
+            observedAt: Date().addingTimeInterval(6 * 60),
+            tool: "Bash",
+            toolUseId: "future-permission-tool",
+            source: "claude"
+        )
+
+        XCTAssertTrue(event.expectsResponse)
+        XCTAssertFalse(
+            event.shouldRejectForImplausibleLifecycleTimestamp()
+        )
+        await store.process(.hookReceived(event))
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertTrue(session.phase.isWaitingForApproval)
+        XCTAssertNotNil(session.activePermission)
+        XCTAssertNil(session.completedAt)
+        XCTAssertLessThan(
+            abs(Date().timeIntervalSince(
+                try XCTUnwrap(session.lastHookEventAt)
+            )),
+            1
+        )
+    }
+
     func testAncientHookTimestampCannotCreateSession() async {
         let store = SessionStore(
             persistenceEnabled: false,
@@ -653,7 +689,9 @@ final class SessionStoreLifecycleTests: XCTestCase {
         )
 
         XCTAssertTrue(
-            event.hasImplausibleLifecycleTimestamp(receivedAt: receivedAt)
+            event.shouldRejectForImplausibleLifecycleTimestamp(
+                receivedAt: receivedAt
+            )
         )
         XCTAssertEqual(
             event.lifecycleObservedDate(receivedAt: receivedAt)

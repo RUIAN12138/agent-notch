@@ -322,8 +322,18 @@ Agent Notch 的 `ClaudeSessionMonitor` 在停止时会异步排队停止 `Sessio
 
 REA 留存的 Vibe Island 设置资源说明其完成通知/展开有独立停留时长；Boring Notch `v2.7.3` 源码则在悬停延迟任务触发前复核当前指针和视图状态。这些是包内文案与源码观察，不是竞品运行时结论。它们再次提示：延迟处理应保留事件时间，并在影响当前状态前核对边界。
 
-Agent Notch 自身的 `HookEvent.lifecycleObservedDate` 原先把“比接收时刻早超过 24 小时”的有限时间戳改成接收时刻。旧的 `PreToolUse` 因而可能越过已完成边界，让卡片重回 processing；同一归一化还被权限 Socket 用来判断请求是否早于完成，可能把陈旧请求当成新请求而不关闭。现改为：缺失/非有限时间仍以接收时间兼容；超过 5 分钟的未来值仍钳制到接收时间；超过 24 小时的旧 Hook 则显式忽略，同时 `lifecycleObservedDate` 保留它的真实旧值供权限边界比较。
+Agent Notch 自身的 `HookEvent.lifecycleObservedDate` 原先把“比接收时刻早超过 24 小时”的有限时间戳改成接收时刻。旧的 `PreToolUse` 因而可能越过已完成边界，让卡片重回 processing；同一归一化还被权限 Socket 用来判断请求是否早于完成，可能把陈旧请求当成新请求而不关闭。上一轮先改为：缺失/非有限时间仍以接收时间兼容；超过 5 分钟的未来值钳制到接收时间；超过 24 小时的旧 Hook 显式忽略，同时 `lifecycleObservedDate` 保留它的真实旧值供权限边界比较。下一小节记录了随后对同步审批/提问请求的细化。
 
 新增 `SessionStoreLifecycleTests.testAncientHookTimestampCannotReviveCompletedSession`、`testAncientHookTimestampCannotCreateSession` 和 `testAncientHookTimestampRemainsOlderThanItsReceiptTime`；前两项先在旧实现下复现失败。`PermissionRoutingTests.testAncientPermissionTimestampRemainsBeforeCompletionBoundary` 验证过期请求在其真实时间早于完成边界时会关闭。以上是本地源代码与 XCTest 的时序证据，不证明竞品私有状态机、真实 Hook 延迟分布或已安装 UI；本轮没有启动竞品应用。
 
 相关 `SessionStoreLifecycleTests` 与 `PermissionRoutingTests` 定向套件合计 64 passed、0 failed；最终完整 macOS XCTest 为 474 passed、0 failed、0 skipped。该结果验证当前源码的自动化行为，不替代真实 Agent Hook 调度或桌面运行验收。
+
+### 异常时间戳不能吞掉同步审批请求（2026-10-25）
+
+复核上一节的未来时间戳防护时发现一个交互边界：`HookSocketServer` 会先为 `PermissionRequest` 登记一个等待 Agent 答复的 socket，再把事件交给 `SessionStore`。若其来源时间超前超过 5 分钟，通用 Hook 防护此前会直接丢弃事件；结果可能是 Agent 正等待审批响应，但状态层没有对应的审批卡。这个问题来自 Agent Notch 自身的接收/裁决顺序，不是对竞品内部实现的推断。
+
+现在按事件语义处理：早于接收时间 24 小时以上的事件仍拒绝；超前 5 分钟以上的普通生命周期事件仍拒绝，避免异常 `PreToolUse` 重开已完成会话或创建幽灵卡片；`expectsResponse` 为真的同步审批/提问请求则使用本地接收时间排序，保留其等待交互状态。缺失或非有限时间戳仍按接收时间兼容。该例外依据 Agent Notch 当前持有的响应连接和请求语义，是本项目设计选择，并非 Boring Notch 或 Vibe Island 的行为结论。
+
+静态参考仍保持边界：Boring Notch `v2.7.3` [源码](https://github.com/TheBoredTeam/boring.notch/blob/v2.7.3/boringNotch/ContentView.swift#L2459-L2520)在悬停延迟执行前取消旧任务并复核当前指针/视图状态，可作为“异步状态变化必须按执行时事实复核”的设计参考；Vibe Island DMG 的设置文案只能证明存在完成展开/停留时长选项，不能证明其运行时状态裁决。竞品应用均未启动。
+
+新增 `SessionStoreLifecycleTests.testImplausiblyFutureHookTimestampCannotReviveCompletedSession`、`testImplausiblyFutureHookTimestampCannotCreateSession` 和 `testFutureDatedInteractivePermissionUsesReceiptTime`。新的审批用例先在旧策略下失败（状态层没有创建 session），修复后通过。完整 macOS XCTest 为 477 passed、0 failed、0 skipped；Xcode 报告 `LifecycleDiagnosticsTests`、`ProcessExecutorTests`、`TmuxTargetFinderTests` 有 QoS 优先级反转警告。以上是本地源代码和 XCTest 证据，不替代真实 Hook 调度、审批端到端或 GUI 验收。

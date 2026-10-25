@@ -330,7 +330,9 @@ actor SessionStore {
     private func processHookEvent(_ event: HookEvent) async {
         let sessionId = event.sessionId
         let receivedAt = Date()
-        guard !event.hasImplausibleLifecycleTimestamp(receivedAt: receivedAt) else {
+        guard !event.shouldRejectForImplausibleLifecycleTimestamp(
+            receivedAt: receivedAt
+        ) else {
             Self.logger.info(
                 "Ignoring hook outside the trusted timestamp window for \(sessionId.prefix(8), privacy: .public)"
             )
