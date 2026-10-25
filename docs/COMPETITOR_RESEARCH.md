@@ -353,3 +353,9 @@ Agent Notch 自身的 `HookEvent.lifecycleObservedDate` 原先把“比接收时
 现在 Reducer 在任何状态迁移前统一校验 `observedAt` 及 active/tool/completed/failed/interrupted 携带的日期：非有限值或超前接收时刻 5 分钟以上的证据不参与状态变更，并在诊断轨迹中以 `implausibleFutureTimestamp` 标记。同步审批/提问仍由 Hook 接入层先归一化为本地接收时间，因此不会丢掉正在等待答复的卡片。新增 Reducer 状态矩阵与 transcript 文件更新回归；两项均先在旧实现下失败，修复后通过。完整 macOS XCTest 为 480 passed、0 failed、0 skipped；Xcode 记录 `ProcessExecutorTests` 一条 QoS 优先级反转运行时警告。
 
 Boring Notch `v2.7.3` 的静态源码在悬停延迟动作执行前重新核对取消状态与当前 UI 条件；这里采用的只是“异步证据要在改变状态前再次校验”的一般原则，未把它描述为 Boring Notch 的 Agent 生命周期行为，也未复制 GPL 源码。以上仅为本地状态机与 XCTest 证据；Vibe Island / Boring Notch 均未启动，真实 Hook 与安装后 UI 仍待独立验收。
+
+### 悬停关闭边界不应打断审批交互（2026-10-25）
+
+Boring Notch `v2.7.3` 的公开源码 `ContentView.handleHover` 会取消过期悬停任务，并在关闭前检查当前视图状态；`BoringViewModel.close()` 还会尊重电池浮层/屏幕共享的关闭保护。这是静态源码观察，REA 对应的 Boring Notch DMG 仅用于身份与制品核对，不据此推断内部 Agent 交互。Agent Notch 已把同一交互原则独立映射到权限审批：审批到达时将悬停预览转为通知所有权，避免指针离开时的自动关闭任务收起仍可操作的审批会话；用户主动打开的面板继续保留用户所有权。
+
+此前单元测试分别覆盖了“指针离开只关闭 hover 所有的面板”和“点击可接管 hover 预览”，但没有覆盖审批恰好在鼠标离开关闭倒计时期间到达。本轮新增 `NotchPointerInteractionTests.testApprovalArrivingDuringHoverExitDelayKeepsPanelOpen`：通过测试事件源让悬停打开、离开并确认关闭条件已经成立，再送入审批并跨过旧关闭时限；面板仍打开且展示对应会话。指针交互、展示时序及两条信息型 Hook 回归合计 34 passed、0 failed、0 skipped；随后完整 macOS XCTest 为 481 passed、0 failed、0 skipped（macOS 27.2 / arm64），Xcode 记录 `ProcessExecutorTests.swift` 一条 QoS 优先级反转运行时警告。这是 ViewModel 与测试事件源的时序证据，不等同真实鼠标/AppKit GUI 或已安装应用验收；竞品应用仍未启动。

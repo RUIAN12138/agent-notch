@@ -200,6 +200,61 @@ final class NotchPointerInteractionTests: XCTestCase {
         ))
     }
 
+    func testApprovalArrivingDuringHoverExitDelayKeepsPanelOpen() async throws {
+        let events = EventMonitors(startMonitors: false)
+        let model = makeViewModel(events)
+        let preferences = NotchPreferences.shared
+        let originalExpandOnHover = preferences.expandOnHover
+        let originalHoverDelay = preferences.hoverDelay
+        let originalCollapseDelay = preferences.collapseDelay
+        defer {
+            preferences.expandOnHover = originalExpandOnHover
+            preferences.hoverDelay = originalHoverDelay
+            preferences.collapseDelay = originalCollapseDelay
+        }
+        preferences.expandOnHover = true
+        preferences.hoverDelay = 0.05
+        preferences.collapseDelay = 0.35
+
+        events.mouseLocation.send(CGPoint(x: 756, y: 968))
+        try await Task.sleep(for: .milliseconds(180))
+        XCTAssertEqual(model.status, .opened)
+        XCTAssertEqual(model.openReason, .hover)
+
+        events.mouseLocation.send(CGPoint(x: 30, y: 30))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(model.isHovering)
+        XCTAssertTrue(NotchViewModel.shouldAutoCollapseOnPointerExit(
+            isHovering: model.isHovering,
+            status: model.status,
+            openReason: model.openReason,
+            collapseOnMouseLeave: true
+        ))
+
+        let approval = SessionState(
+            sessionId: "approval-during-hover-close",
+            cwd: "/tmp/approval-during-hover-close",
+            phase: .waitingForApproval(PermissionContext(
+                toolUseId: "approval-during-hover-close-tool",
+                toolName: "Bash",
+                toolInput: nil,
+                receivedAt: Date()
+            ))
+        )
+        model.showApproval(for: approval)
+
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertEqual(model.status, .opened)
+        XCTAssertEqual(model.openReason, .notification)
+        XCTAssertEqual(model.contentType, .chat(approval))
+        XCTAssertFalse(NotchViewModel.shouldAutoCollapseOnPointerExit(
+            isHovering: false,
+            status: model.status,
+            openReason: model.openReason,
+            collapseOnMouseLeave: true
+        ))
+    }
+
     func testAccessibilityOpenIsIdempotentAndPreservesSettings() async {
         let model = makeViewModel(EventMonitors(startMonitors: false))
         model.openFromAccessibility()
