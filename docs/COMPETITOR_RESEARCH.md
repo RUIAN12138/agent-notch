@@ -406,3 +406,11 @@ Agent Notch 采用相同的交互原则而非复用上游代码：设置页提�
 现在这些逐帧/呼吸/轨道指示均读取系统减少动态效果状态。启用后不创建周期时间线，工作和等待仍以原来的颜色与形状显示为固定代表帧/固定亮度；空闲宠物保留其原本随机静止帧。关闭减少动态效果后继续使用原有帧率、动画节奏和缓存资源。新增 `testReducedMotionPixelPolicyKeepsDeterministicStateFrames` 锁定代表帧选择、索引边界及固定亮度策略。
 
 验证：定向 XCTest `1 passed / 0 failed`；完整 macOS XCTest `490 passed / 0 failed / 0 skipped`。没有进行人工桌面 GUI 动效验收，因此这里只确认源码构建和测试行为；竞品仍为静态分析、未启动。
+
+### 审批后的旧工具结果不能覆盖当前状态（2026-10-26）
+
+Vibe Island `1.0.55` 官方更新说明提到，审批通过后命令失败时应清理审批卡；这是产品发布说明，不是对其内部实现的观察。对照 Agent Notch 本地时序时发现：`LifecycleReducer` 虽会拒绝早于已接受审批时间的 Hook，但工具展示层仍可能把同一个已批准工具从 `running` 改成 `error`，造成会话仍在处理中、工具卡却显示旧失败的状态不一致。
+
+现在 `ToolTracker` 为具体工具 ID 保留审批时间边界；Hook/transcript 的完成结果必须带有不早于该边界的时间戳，才能更新已批准工具状态。成功接受较新的结果后清除该工具边界，其他工具和会话状态不受影响。新增 `SessionStoreLifecycleTests.testStaleFailureHookCannotFinishToolAfterApproval`：旧实现下先复现为 `error`、修复后保持 `running`；再验证时间更新的失败 Hook 仍可正确切换为 `error`。
+
+定向回归测试 `1 passed / 0 failed`；完整 macOS XCTest 为 `491 passed / 0 failed / 0 skipped`（macOS 27.2 / arm64）。Xcode 仍记录 `ProcessExecutorTests.swift` 一条 QoS 优先级反转运行时警告。该验证是本地状态模型与自动化测试，不替代真实 Hook 延迟、Agent 端到端审批或安装后 UI 验收；竞品仍未启动。

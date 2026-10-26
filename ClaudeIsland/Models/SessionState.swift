@@ -347,6 +347,10 @@ struct ToolTracker: Equatable, Sendable {
     /// survives the next turn so delayed history cannot recreate old spinners.
     var terminalBoundaryAt: Date?
 
+    /// Approval timestamps protect a newly running tool from delayed terminal
+    /// rows that predate the user's approval decision.
+    private(set) var approvedAtByToolID: [String: Date]
+
     /// Tools currently in progress, keyed by tool_use_id
     var inProgress: [String: ToolInProgress]
 
@@ -364,13 +368,15 @@ struct ToolTracker: Equatable, Sendable {
         seenIds: Set<String> = [],
         lastSyncOffset: UInt64 = 0,
         lastSyncTime: Date? = nil,
-        terminalBoundaryAt: Date? = nil
+        terminalBoundaryAt: Date? = nil,
+        approvedAtByToolID: [String: Date] = [:]
     ) {
         self.inProgress = inProgress
         self.seenIds = seenIds
         self.lastSyncOffset = lastSyncOffset
         self.lastSyncTime = lastSyncTime
         self.terminalBoundaryAt = terminalBoundaryAt
+        self.approvedAtByToolID = approvedAtByToolID
     }
 
     nonisolated mutating func recordTerminalBoundary(_ time: Date) {
@@ -385,6 +391,23 @@ struct ToolTracker: Equatable, Sendable {
     /// Check if a tool ID has been seen
     nonisolated func hasSeen(_ id: String) -> Bool {
         seenIds.contains(id)
+    }
+
+    nonisolated mutating func recordApproval(id: String, at observedAt: Date) {
+        approvedAtByToolID[id] = max(
+            approvedAtByToolID[id] ?? .distantPast,
+            observedAt
+        )
+    }
+
+    nonisolated func acceptsCompletion(id: String, at observedAt: Date?) -> Bool {
+        guard let approvalAt = approvedAtByToolID[id] else { return true }
+        guard let observedAt else { return false }
+        return observedAt >= approvalAt
+    }
+
+    nonisolated mutating func clearApprovalBoundary(id: String) {
+        approvedAtByToolID.removeValue(forKey: id)
     }
 
     /// Start tracking a tool

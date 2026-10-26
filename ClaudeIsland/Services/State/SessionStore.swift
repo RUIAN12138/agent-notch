@@ -626,7 +626,11 @@ actor SessionStore {
                 event.event != "SubagentStart" &&
                 !isExactPendingCompletion)
         if mayStartTrackedWork && didAcceptExactPendingCompletion {
-            processToolTracking(event: event, session: &session)
+            processToolTracking(
+                event: event,
+                observedAt: observedAt,
+                session: &session
+            )
             // Even a late SubagentStop may clear its exact ID from the active
             // set. After root completion, only a matched active identity can
             // create team attention; unmatched legacy events stay suppressed.
@@ -869,7 +873,11 @@ actor SessionStore {
         )
     }
 
-    private func processToolTracking(event: HookEvent, session: inout SessionState) {
+    private func processToolTracking(
+        event: HookEvent,
+        observedAt: Date,
+        session: inout SessionState
+    ) {
         switch event.event {
         case "PreToolUse":
             if let toolUseId = event.toolUseId, let toolName = event.tool {
@@ -926,7 +934,9 @@ actor SessionStore {
                 if let index = session.chatItems.firstIndex(where: { $0.id == toolUseId }) {
                     applyToolCompletion(ToolCompletionResult(
                         status: succeeded ? .success : .error,
-                        result: nil, structuredResult: nil
+                        result: nil,
+                        structuredResult: nil,
+                        observedAt: observedAt
                     ), at: index, in: &session)
                 }
             }
@@ -1133,6 +1143,7 @@ actor SessionStore {
         ) else { return }
 
         updateToolStatus(in: &session, toolId: toolUseId, status: .running)
+        session.toolTracker.recordApproval(id: toolUseId, at: resolvedAt)
 
         sessions[sessionId] = session
     }
@@ -1184,6 +1195,13 @@ actor SessionStore {
     ) {
         guard result.status == .success || result.status == .error || result.status == .interrupted,
               case .toolCall(var tool) = session.chatItems[index].type else { return }
+        let itemId = session.chatItems[index].id
+        guard session.toolTracker.acceptsCompletion(
+            id: itemId,
+            at: result.observedAt
+        ) else {
+            return
+        }
         let mayReplaceStatus = tool.isTerminalPlaceholder ||
             tool.status == .running || tool.status == .waitingForApproval
         guard mayReplaceStatus || tool.status == result.status else { return }
@@ -1194,6 +1212,7 @@ actor SessionStore {
         let item = session.chatItems[index]
         session.chatItems[index] = ChatHistoryItem(id: item.id, type: .toolCall(tool), timestamp: item.timestamp)
         session.toolTracker.completeTool(id: item.id, success: tool.status == .success)
+        session.toolTracker.clearApprovalBoundary(id: itemId)
     }
 
     /// Full history and result-only increments must enrich existing rows too.

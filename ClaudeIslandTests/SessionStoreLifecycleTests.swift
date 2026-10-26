@@ -1054,6 +1054,74 @@ final class SessionStoreLifecycleTests: XCTestCase {
         XCTAssertEqual(successorTool.status, .waitingForApproval)
     }
 
+    func testStaleFailureHookCannotFinishToolAfterApproval() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "approved-tool-stale-failure-\(UUID().uuidString)"
+        let now = Date()
+        let requestAt = now.addingTimeInterval(-3)
+        let failureAt = now.addingTimeInterval(-2)
+        let approvalAt = now.addingTimeInterval(-1)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PermissionRequest",
+            status: "waiting_for_approval",
+            observedAt: requestAt,
+            tool: "Bash",
+            toolUseId: "approved-tool"
+        )))
+        await store.process(.permissionApproved(
+            sessionId: sessionId,
+            toolUseId: "approved-tool",
+            resolvedAt: approvalAt
+        ))
+
+        // The lifecycle reducer rejects this older event, so its presentation
+        // bookkeeping must not independently turn the newly approved tool red.
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PostToolUseFailure",
+            status: "processing",
+            observedAt: failureAt,
+            tool: "Bash",
+            toolUseId: "approved-tool"
+        )))
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertEqual(session.phase, .processing)
+        XCTAssertNil(session.activePermission)
+        XCTAssertTrue(session.pendingInteractions.toolUseIds.isEmpty)
+        guard let item = session.chatItems.first(where: {
+            $0.id == "approved-tool"
+        }), case .toolCall(let tool) = item.type else {
+            return XCTFail("Expected the approved tool row")
+        }
+        XCTAssertEqual(tool.status, .running)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "PostToolUseFailure",
+            status: "processing",
+            observedAt: now,
+            tool: "Bash",
+            toolUseId: "approved-tool"
+        )))
+
+        let completedSnapshot = await store.session(for: sessionId)
+        let completedSession = try XCTUnwrap(completedSnapshot)
+        guard let completedItem = completedSession.chatItems.first(where: {
+            $0.id == "approved-tool"
+        }), case .toolCall(let completedTool) = completedItem.type else {
+            return XCTFail("Expected the failed tool row")
+        }
+        XCTAssertEqual(completedTool.status, .error)
+    }
+
     func testDirectPermissionCreatesTrackedPlaceholder() async throws {
         let store = SessionStore(
             persistenceEnabled: false,
