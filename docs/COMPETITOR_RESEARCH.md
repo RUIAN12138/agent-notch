@@ -428,3 +428,11 @@ Agent Notch 原先没有 reopen delegate；单实例检测只激活既有进程�
 竞品均未启动。完整 XCTest 只证明本地策略与构建正确；尚未在已安装应用、Finder/Dock 重开路径或真实桌面上做端到端验收。
 
 后续对同一 `2.8-rc.2` 主程序进行 REA 原生派发元数据只读检查，直接观察到 `_TtC11boringNotch11AppDelegate` 实例方法 selector `applicationShouldHandleReopen:hasVisibleWindows:`。Evidence `ev_a1febe414cbf78d05ad553e14a3e8f7e5e96152d116e7eaa2edce42ae099cce7` 绑定到上述 arm64 可执行文件 SHA-256 `524091c698dff91dd82c7382d55dbf507a9b874cb61066cd1f766f4c04244cf9`。这项发行二进制元数据证据确认 selector 存在；它不揭示方法体或返回值。`applicationShouldHandleReopen` 中展示设置窗口并返回 `false` 的具体行为仍来自官方 `v2.8-rc.2` 源码，不宣称已由二进制还原。REA 元数据读取覆盖为 partial，且 Ghidra/Hopper/IDA 深度分析提供器在本机不可用；不据此声称完整反编译或运行时验收。
+
+### 信息通知不能冒充生命周期状态（2026-10-26）
+
+Vibe Island `1.0.55` 的[官方更新记录](https://vibeisland.app/changelog/)提到修正过期/错误会话卡片及审批、提问结束后的卡片清理。本轮把它作为“状态展示必须与真实生命周期一致”的复核动机；这不是对 Vibe Island 内部实现或本机运行行为的推断。
+
+对照 Agent Notch 的 Hook 处理发现一个本地协议边界缺口：普通 `Notification`（例如 `auth_success`）即使附带 `waiting_for_input`、`processing` 或 `ended` 状态，也会进入通用状态映射；未知会话可能因此创建幽灵卡片，已知会话则可能被错误推进、标记完成并运行结束清理。现在除明确的 `idle_prompt` 外，所有 `Notification` 都不参与生命周期状态裁决；`ended` 的通用清理分支也明确排除信息通知。新增回归矩阵分别验证未知/已知会话与上述状态组合，并确保 `idle_prompt` 既有等待输入行为仍通过。两项回归在修复前共复现 10 个断言失败，修复后通过。
+
+定向 `SessionStoreLifecycleTests` 为 `47 passed / 0 failed`；完整 macOS XCTest 为 `495 passed / 0 failed / 0 skipped`。测试验证本地事件裁决与卡片状态，不替代真实 Claude Hook 端到端或桌面 GUI 验收；Vibe Island 与 Boring Notch 仍未启动，竞品研究继续保持静态范围。

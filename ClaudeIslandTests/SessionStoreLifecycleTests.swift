@@ -783,19 +783,75 @@ final class SessionStoreLifecycleTests: XCTestCase {
             fileSyncEnabled: false,
             externalLifecycleEffectsEnabled: false
         )
-        let sessionId = "orphan-notification-\(UUID().uuidString)"
+        let receivedAt = Date()
 
-        await store.process(.hookReceived(hook(
-            sessionId: sessionId,
-            event: "Notification",
-            status: "notification",
-            observedAt: Date(),
-            notificationType: "auth_success",
-            source: "claude"
-        )))
+        for (index, status) in [
+            "notification",
+            "waiting_for_input",
+            "processing",
+            "ended"
+        ].enumerated() {
+            let sessionId = "orphan-notification-\(index)-\(UUID().uuidString)"
+            await store.process(.hookReceived(hook(
+                sessionId: sessionId,
+                event: "Notification",
+                status: status,
+                observedAt: receivedAt.addingTimeInterval(Double(index)),
+                notificationType: "auth_success",
+                source: "claude"
+            )))
 
-        let session = await store.session(for: sessionId)
-        XCTAssertNil(session)
+            let session = await store.session(for: sessionId)
+            XCTAssertNil(session, "A notification with status \(status) must not create a lifecycle session")
+        }
+    }
+
+    func testInformationalNotificationCannotAdvanceKnownSession() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let baseTime = Date().addingTimeInterval(-10)
+
+        for (index, status) in [
+            "waiting_for_input",
+            "processing",
+            "ended"
+        ].enumerated() {
+            let sessionId = "known-notification-\(index)-\(UUID().uuidString)"
+            await store.process(.hookReceived(hook(
+                sessionId: sessionId,
+                event: "UserPromptSubmit",
+                status: "processing",
+                observedAt: baseTime
+            )))
+            let beforeSession = await store.session(for: sessionId)
+            let before = try XCTUnwrap(beforeSession)
+
+            await store.process(.hookReceived(hook(
+                sessionId: sessionId,
+                event: "Notification",
+                status: status,
+                observedAt: baseTime.addingTimeInterval(Double(index + 1)),
+                notificationType: "auth_success",
+                source: "claude"
+            )))
+
+            let afterSession = await store.session(for: sessionId)
+            let after = try XCTUnwrap(afterSession)
+            XCTAssertEqual(
+                after.phase,
+                .processing,
+                "Notification status \(status) must not replace the active phase"
+            )
+            XCTAssertNil(after.completedAt, "An informational notification must not complete the turn")
+            XCTAssertEqual(
+                after.lastHookEventAt,
+                before.lastHookEventAt,
+                "An informational notification must not advance the lifecycle boundary"
+            )
+        }
     }
 
     func testDeliveredApprovalRejectsOlderCompletion() async throws {

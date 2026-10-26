@@ -257,6 +257,12 @@ extension HookEvent {
             return .waitingForInput
         }
 
+        // Other notifications are informational, even if a producer happens
+        // to attach a lifecycle-looking status value to the payload.
+        if event == "Notification" {
+            return nil
+        }
+
         switch status {
         case "waiting_for_input":
             return .waitingForInput

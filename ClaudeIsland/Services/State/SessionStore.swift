@@ -424,8 +424,13 @@ actor SessionStore {
             event.event == "StopFailure" ||
             (event.event == "Notification" &&
                 event.notificationType == "idle_prompt")
+        let isInformationalNotification =
+            event.event == "Notification" &&
+            event.notificationType != "idle_prompt"
         let hookSignal: HookLifecycleSignal?
-        if event.status == "ended" {
+        if isInformationalNotification {
+            hookSignal = nil
+        } else if event.status == "ended" {
             hookSignal = event.event == "SessionExpired" ||
                 event.event == "SessionEnd"
                 ? .removed
@@ -580,7 +585,7 @@ actor SessionStore {
             )
         }
 
-        if event.status == "ended" {
+        if event.status == "ended" && !isInformationalNotification {
             guard shouldApplyLifecycle else {
                 sessions[sessionId] = session
                 return
