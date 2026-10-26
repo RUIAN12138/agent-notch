@@ -111,16 +111,48 @@ struct WaitingForApprovalIcon: View {
     }
 }
 
-// MARK: - Running/Processing Icon (hourglass) - Animated
+// MARK: - Running/Processing Icon (hourglass)
 struct RunningIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let size: CGFloat
     let color: Color
-    @State private var rotation: Double = 0
 
     init(size: CGFloat = 12, color: Color = TerminalColors.cyan) {
         self.size = size
         self.color = color
     }
+
+    var body: some View {
+        if PixelMotionPolicy.shouldAnimate(reduceMotion: reduceMotion) {
+            AnimatedRunningIcon(size: size, color: color)
+        } else {
+            RunningIconArtwork(size: size, color: color, rotation: 0)
+        }
+    }
+}
+
+private struct AnimatedRunningIcon: View {
+    let size: CGFloat
+    let color: Color
+    @State private var rotation: Double = 0
+
+    var body: some View {
+        RunningIconArtwork(size: size, color: color, rotation: rotation)
+            .onAppear {
+                withAnimation(
+                    .linear(duration: 2.0)
+                    .repeatForever(autoreverses: false)
+                ) {
+                    rotation = 360
+                }
+            }
+    }
+}
+
+private struct RunningIconArtwork: View {
+    let size: CGFloat
+    let color: Color
+    let rotation: Double
 
     var body: some View {
         Canvas { context, canvasSize in
@@ -170,14 +202,6 @@ struct RunningIcon: View {
         }
         .frame(width: size, height: size)
         .rotationEffect(.degrees(rotation))
-        .onAppear {
-            withAnimation(
-                .linear(duration: 2.0)
-                .repeatForever(autoreverses: false)
-            ) {
-                rotation = 360
-            }
-        }
     }
 }
 
