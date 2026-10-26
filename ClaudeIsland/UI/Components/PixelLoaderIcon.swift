@@ -10,6 +10,7 @@ import SwiftUI
 
 @MainActor
 struct PixelLoaderIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let size: CGFloat
 
     private static let framesPerSecond: TimeInterval = 8
@@ -21,13 +22,25 @@ struct PixelLoaderIcon: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: Self.frameDuration)) { context in
-            let elapsed = context.date.timeIntervalSinceReferenceDate
-            let frameIndex =
-                Int(elapsed / Self.frameDuration) % Self.frameNames.count
-            let frameName = Self.frameNames[frameIndex]
+        Group {
+            if PixelMotionPolicy.shouldAnimate(reduceMotion: reduceMotion) {
+                TimelineView(.periodic(from: .now, by: Self.frameDuration)) { context in
+                    let elapsed = context.date.timeIntervalSinceReferenceDate
+                    let frameIndex =
+                        Int(elapsed / Self.frameDuration) % Self.frameNames.count
+                    loaderArtwork(named: Self.frameNames[frameIndex])
+                }
+            } else {
+                loaderArtwork(named: Self.stillFrameName)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
 
-            if let frameImage = Self.frameImage(named: frameName) {
+    private func loaderArtwork(named name: String) -> some View {
+        Group {
+            if let frameImage = Self.frameImage(named: name) {
                 Image(nsImage: frameImage)
                     .resizable()
                     .interpolation(.none)
@@ -45,8 +58,6 @@ struct PixelLoaderIcon: View {
                 Color.clear
             }
         }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
     }
 
     private static let glowColor = Color(
@@ -56,6 +67,12 @@ struct PixelLoaderIcon: View {
     ).opacity(0.26)
     private static let frameNames = (0...7).map {
         String(format: "%02d-blue-f%d", $0, $0 + 1)
+    }
+    private static var stillFrameName: String {
+        let index = PixelMotionPolicy.representativeFrameIndex(
+            count: frameNames.count
+        ) ?? 0
+        return frameNames[index]
     }
 
     private static func frameImage(named name: String) -> NSImage? {
@@ -81,6 +98,7 @@ struct PixelLoaderIcon: View {
 /// so it is smooth while remaining slower than the blue working comet.
 @MainActor
 struct WaitingPixelIndicatorIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let size: CGFloat
 
     init(size: CGFloat = 19) {
@@ -88,47 +106,58 @@ struct WaitingPixelIndicatorIcon: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
-            let progress = context.date.timeIntervalSinceReferenceDate
-                .truncatingRemainder(dividingBy: Self.orbitDuration)
-                / Self.orbitDuration
-            Canvas { canvas, _ in
-                let scale = size / 20
-                let block = 4 * scale
-                let center = size / 2
-                let radius = 7 * scale
-                for trailIndex in 0..<3 {
-                    let angle =
-                        progress * 2 * Double.pi
-                        - Double.pi / 2
-                        - Double(trailIndex) * 0.38
-                    let opacity = [1.0, 0.52, 0.22][trailIndex]
-                    canvas.fill(
-                        Path(
-                            CGRect(
-                                x: center
-                                    + CGFloat(cos(angle)) * radius
-                                    - block / 2,
-                                y: center
-                                    + CGFloat(sin(angle)) * radius
-                                    - block / 2,
-                                width: block,
-                                height: block
-                            )
-                        ),
-                        with: .color(
-                            Self.color.opacity(opacity)
-                        )
-                    )
+        Group {
+            if PixelMotionPolicy.shouldAnimate(reduceMotion: reduceMotion) {
+                TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
+                    orbitArtwork(progress: progress(at: context.date))
                 }
+            } else {
+                orbitArtwork(progress: 0)
             }
-            .shadow(
-                color: Self.color.opacity(0.32),
-                radius: 1.4
-            )
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+
+    private func progress(at date: Date) -> Double {
+        date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: Self.orbitDuration)
+            / Self.orbitDuration
+    }
+
+    private func orbitArtwork(progress: Double) -> some View {
+        Canvas { canvas, _ in
+            let scale = size / 20
+            let block = 4 * scale
+            let center = size / 2
+            let radius = 7 * scale
+            for trailIndex in 0..<3 {
+                let angle =
+                    progress * 2 * Double.pi
+                    - Double.pi / 2
+                    - Double(trailIndex) * 0.38
+                let opacity = [1.0, 0.52, 0.22][trailIndex]
+                canvas.fill(
+                    Path(
+                        CGRect(
+                            x: center
+                                + CGFloat(cos(angle)) * radius
+                                - block / 2,
+                            y: center
+                                + CGFloat(sin(angle)) * radius
+                                - block / 2,
+                            width: block,
+                            height: block
+                        )
+                    ),
+                    with: .color(Self.color.opacity(opacity))
+                )
+            }
+        }
+        .shadow(
+            color: Self.color.opacity(0.32),
+            radius: 1.4
+        )
     }
 
     private static let color = Color(

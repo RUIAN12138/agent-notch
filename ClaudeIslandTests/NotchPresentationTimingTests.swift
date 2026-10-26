@@ -111,6 +111,42 @@ final class NotchPresentationTimingTests: XCTestCase {
         )
     }
 
+    func testReducedMotionPixelPolicyKeepsDeterministicStateFrames() {
+        XCTAssertFalse(PixelMotionPolicy.shouldAnimate(reduceMotion: true))
+        XCTAssertTrue(PixelMotionPolicy.shouldAnimate(reduceMotion: false))
+        XCTAssertEqual(
+            PixelMotionPolicy.representativeFrameIndex(count: 8),
+            4
+        )
+        XCTAssertEqual(
+            PixelMotionPolicy.representativeFrameIndex(
+                count: 7,
+                preferredIndex: 5
+            ),
+            5
+        )
+        XCTAssertEqual(
+            PixelMotionPolicy.representativeFrameIndex(
+                count: 7,
+                preferredIndex: -2
+            ),
+            0
+        )
+        XCTAssertEqual(
+            PixelMotionPolicy.representativeFrameIndex(
+                count: 7,
+                preferredIndex: 9
+            ),
+            6
+        )
+        XCTAssertNil(PixelMotionPolicy.representativeFrameIndex(count: 0))
+        XCTAssertEqual(
+            PixelMotionPolicy.reducedMotionOpacity,
+            0.6,
+            accuracy: 0.001
+        )
+    }
+
     func testAttentionPresentationUsesConsistentPriorityForConcurrentStates() {
         func state(
             permission: Bool = false,

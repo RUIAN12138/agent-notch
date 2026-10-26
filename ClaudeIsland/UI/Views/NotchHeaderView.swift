@@ -10,11 +10,30 @@ import AppKit
 import Foundation
 import SwiftUI
 
-enum VibePetMotion: Equatable {
+enum VibePetMotion: String, Hashable {
     case idle
     case working
     case waiting
     case ready
+}
+
+/// Shared policy for pixel indicators: reduced motion keeps a recognizable,
+/// deterministic state glyph and avoids periodic view invalidation.
+enum PixelMotionPolicy {
+    static let reducedMotionOpacity = 0.6
+
+    static func shouldAnimate(reduceMotion: Bool) -> Bool {
+        !reduceMotion
+    }
+
+    static func representativeFrameIndex(
+        count: Int,
+        preferredIndex: Int? = nil
+    ) -> Int? {
+        guard count > 0 else { return nil }
+        guard let preferredIndex else { return count / 2 }
+        return min(max(preferredIndex, 0), count - 1)
+    }
 }
 
 private struct VibePetAnimation {
@@ -44,6 +63,7 @@ private struct VibePetAnimation {
 
 @MainActor
 struct VibePetIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let size: CGFloat
     let motion: VibePetMotion
     private static var frameCache: [String: NSImage] = [:]
@@ -63,51 +83,80 @@ struct VibePetIcon: View {
     }
 
     var body: some View {
-        // `.animation` remains display-link driven even when the requested
-        // interval is one second. A periodic schedule preserves the authored
-        // frame cadence without waking the collapsed notch at screen refresh
-        // rate while the pet is holding an idle frame.
-        TimelineView(.periodic(from: .now, by: timelineInterval)) { context in
-            let frameName = displayedFrameName(at: context.date)
-
-            if let frameImage = Self.frameImage(named: frameName) {
-                ZStack {
-                    Image(nsImage: frameImage)
-                        .renderingMode(.template)
-                        .resizable()
-                        .interpolation(.none)
-                        .antialiased(false)
-                        .aspectRatio(contentMode: .fit)
-                        .foregroundStyle(glowColor)
-                        .blur(radius: 2.6)
-                        .opacity(0.32)
-
-                    Image(nsImage: frameImage)
-                        .resizable()
-                        .interpolation(.none)
-                        .antialiased(false)
-                        .aspectRatio(contentMode: .fit)
-                        .shadow(
-                            color: glowColor.opacity(0.46),
-                            radius: 1.1
-                        )
-                        .shadow(
-                            color: glowColor.opacity(0.18),
-                            radius: 3.0
-                        )
+        Group {
+            if PixelMotionPolicy.shouldAnimate(reduceMotion: reduceMotion) {
+                // A periodic schedule preserves authored cadence without
+                // waking the collapsed notch at screen refresh rate.
+                TimelineView(.periodic(from: .now, by: timelineInterval)) { context in
+                    petArtwork(named: displayedFrameName(at: context.date))
                 }
             } else {
-                Color.clear
+                petArtwork(named: stillFrameName)
             }
         }
         .frame(width: size, height: size)
-        .task(id: motion) {
+        .task(id: animationScheduleKey) {
+            guard !reduceMotion else {
+                idlePlaybackStartedAt = nil
+                return
+            }
             await runIdlePlaybackSchedule()
         }
-        .task(id: motion) {
+        .task(id: animationScheduleKey) {
+            guard !reduceMotion else {
+                rareGlanceVisible = false
+                return
+            }
             await runRareGlanceSchedule()
         }
         .accessibilityHidden(true)
+    }
+
+    private var animationScheduleKey: String {
+        "\(motion.rawValue)-\(reduceMotion)"
+    }
+
+    private var stillFrameName: String {
+        let frameNames = regularAnimation.frameNames
+        let preferredIndex = motion == .idle ? idleHeldFrameIndex : nil
+        let index = PixelMotionPolicy.representativeFrameIndex(
+            count: frameNames.count,
+            preferredIndex: preferredIndex
+        ) ?? 0
+        return frameNames[index]
+    }
+
+    @ViewBuilder
+    private func petArtwork(named frameName: String) -> some View {
+        if let frameImage = Self.frameImage(named: frameName) {
+            ZStack {
+                Image(nsImage: frameImage)
+                    .renderingMode(.template)
+                    .resizable()
+                    .interpolation(.none)
+                    .antialiased(false)
+                    .aspectRatio(contentMode: .fit)
+                    .foregroundStyle(glowColor)
+                    .blur(radius: 2.6)
+                    .opacity(0.32)
+
+                Image(nsImage: frameImage)
+                    .resizable()
+                    .interpolation(.none)
+                    .antialiased(false)
+                    .aspectRatio(contentMode: .fit)
+                    .shadow(
+                        color: glowColor.opacity(0.46),
+                        radius: 1.1
+                    )
+                    .shadow(
+                        color: glowColor.opacity(0.18),
+                        radius: 3.0
+                    )
+            }
+        } else {
+            Color.clear
+        }
     }
 
     private static func frameImage(named name: String) -> NSImage? {
@@ -196,7 +245,7 @@ struct VibePetIcon: View {
     }
 
     private func runIdlePlaybackSchedule() async {
-        guard motion == .idle else {
+        guard !reduceMotion, motion == .idle else {
             idlePlaybackStartedAt = nil
             return
         }
@@ -231,6 +280,10 @@ struct VibePetIcon: View {
     }
 
     private func runRareGlanceSchedule() async {
+        guard !reduceMotion else {
+            rareGlanceVisible = false
+            return
+        }
         rareGlanceVisible = false
 
         while !Task.isCancelled {
@@ -307,6 +360,7 @@ struct VibePetIcon: View {
 /// A tiny state companion that sits beside the pet. Its silhouettes and
 /// slower cadence deliberately differ from the 3x3 comet on the far right.
 struct PetStateSignalIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let motion: VibePetMotion
     let size: CGFloat
 
@@ -316,53 +370,69 @@ struct PetStateSignalIcon: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: interval)) { context in
-            let phase = Int(
-                context.date.timeIntervalSinceReferenceDate / interval
-            )
-            let breathingOpacity = waitingOpacity(at: context.date)
-
-            Canvas { canvas, _ in
-                if motion == .waiting {
-                    let diameter: CGFloat = 5
-                    canvas.fill(
-                        Path(
-                            ellipseIn: CGRect(
-                                x: (size - diameter) / 2,
-                                y: (size - diameter) / 2,
-                                width: diameter,
-                                height: diameter
-                            )
+        Group {
+            if PixelMotionPolicy.shouldAnimate(reduceMotion: reduceMotion) {
+                TimelineView(.periodic(from: .now, by: interval)) { context in
+                    signalArtwork(
+                        phase: Int(
+                            context.date.timeIntervalSinceReferenceDate / interval
                         ),
-                        with: .color(color.opacity(breathingOpacity))
+                        breathingOpacity: waitingOpacity(at: context.date)
                     )
-                } else {
-                    for pixel in pixels(for: phase) {
-                        canvas.fill(
-                            Path(
-                                CGRect(
-                                    x: pixel.x,
-                                    y: pixel.y,
-                                    width: 4,
-                                    height: 4
-                                )
-                            ),
-                            with: .color(color.opacity(pixel.opacity))
-                        )
-                    }
                 }
+            } else {
+                signalArtwork(
+                    phase: 0,
+                    breathingOpacity: PixelMotionPolicy.reducedMotionOpacity
+                )
             }
-            .shadow(
-                color: color.opacity(
-                    motion == .waiting
-                        ? 0.16 + breathingOpacity * 0.34
-                        : 0.42
-                ),
-                radius: motion == .waiting ? 1.5 : 1.2
-            )
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+
+    private func signalArtwork(
+        phase: Int,
+        breathingOpacity: Double
+    ) -> some View {
+        Canvas { canvas, _ in
+            if motion == .waiting {
+                let diameter: CGFloat = 5
+                canvas.fill(
+                    Path(
+                        ellipseIn: CGRect(
+                            x: (size - diameter) / 2,
+                            y: (size - diameter) / 2,
+                            width: diameter,
+                            height: diameter
+                        )
+                    ),
+                    with: .color(color.opacity(breathingOpacity))
+                )
+            } else {
+                for pixel in pixels(for: phase) {
+                    canvas.fill(
+                        Path(
+                            CGRect(
+                                x: pixel.x,
+                                y: pixel.y,
+                                width: 4,
+                                height: 4
+                            )
+                        ),
+                        with: .color(color.opacity(pixel.opacity))
+                    )
+                }
+            }
+        }
+        .shadow(
+            color: color.opacity(
+                motion == .waiting
+                    ? 0.16 + breathingOpacity * 0.34
+                    : 0.42
+            ),
+            radius: motion == .waiting ? 1.5 : 1.2
+        )
     }
 
     private var interval: TimeInterval {
@@ -431,6 +501,7 @@ struct PetStateSignalIcon: View {
 /// A purpose-built signal for narrow compact notches. It uses a fixed 7×7
 /// logical grid and fewer, larger pixels than the full companion.
 struct CompactPetCompanionIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let motion: VibePetMotion
     let size: CGFloat
 
@@ -440,30 +511,46 @@ struct CompactPetCompanionIcon: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: interval)) { context in
-            let elapsed = context.date.timeIntervalSinceReferenceDate
-            let phase = Int(elapsed / interval)
-            let breath = (sin(elapsed * .pi) + 1) / 2
-
-            Canvas { canvas, _ in
-                for pixel in pixels(phase: phase, breath: breath) {
-                    canvas.fill(
-                        Path(
-                            CGRect(
-                                x: (pixel.x + 1) * unit,
-                                y: (pixel.y + 1) * unit,
-                                width: unit,
-                                height: unit
-                            )
-                        ),
-                        with: .color(color.opacity(pixel.opacity))
+        Group {
+            if PixelMotionPolicy.shouldAnimate(reduceMotion: reduceMotion) {
+                TimelineView(.periodic(from: .now, by: interval)) { context in
+                    let elapsed = context.date.timeIntervalSinceReferenceDate
+                    companionArtwork(
+                        phase: Int(elapsed / interval),
+                        breath: (sin(elapsed * .pi) + 1) / 2
                     )
                 }
+            } else {
+                companionArtwork(
+                    phase: 0,
+                    breath: PixelMotionPolicy.reducedMotionOpacity
+                )
             }
-            .shadow(color: color.opacity(0.32), radius: 0.8)
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+
+    private func companionArtwork(
+        phase: Int,
+        breath: Double
+    ) -> some View {
+        Canvas { canvas, _ in
+            for pixel in pixels(phase: phase, breath: breath) {
+                canvas.fill(
+                    Path(
+                        CGRect(
+                            x: (pixel.x + 1) * unit,
+                            y: (pixel.y + 1) * unit,
+                            width: unit,
+                            height: unit
+                        )
+                    ),
+                    with: .color(color.opacity(pixel.opacity))
+                )
+            }
+        }
+        .shadow(color: color.opacity(0.32), radius: 0.8)
     }
 
     private var unit: CGFloat {

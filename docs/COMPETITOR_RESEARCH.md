@@ -387,3 +387,22 @@ Boring Notch 官方 [Issue #1062](https://github.com/TheBoredTeam/boring.notch/i
 Agent Notch 采用相同的交互原则而非复用上游代码：设置页提供独立的开合动画开关，关闭时使用零时长切换；速度保持 `1×` 默认值以兼容当前手感，范围为 `0.5×–2×`，同时作用于打开、关闭和悬停响应。macOS“减少动态效果”开启时，速度滑块显示系统控制并禁用，系统简化过渡不随倍速变化。偏好经过持久化和非有限/越界值钳制测试。
 
 新增速度策略与偏好测试后，定向 `NotchPresentationTimingTests` 为 `18 passed / 0 failed`；完整 macOS XCTest 为 `489 passed / 0 failed / 0 skipped`（macOS 27.2 / arm64）。Xcode 仍报告 `ProcessExecutorTests.swift` 一条既有 QoS 优先级反转运行时警告。以上验证本地源码、偏好模型与自动化测试；尚未进行设置页 GUI 手动验收或已安装应用体验测试。
+
+### 最新竞品包身份复核（2026-10-26）
+
+从 Vibe Island 官方下载页取得当前 DMG，并从 Boring Notch 官方 `v2.8-rc.2` Release 取得预发布 DMG；两份文件只读挂载，核对包内身份后卸载，未安装或启动应用，也未触发应用内更新。
+
+| 对象 | 包内身份 / SHA-256 | REA 静态覆盖 |
+| --- | --- | --- |
+| Vibe Island | `1.0.55` / `app.vibeisland.macos`；DMG `3a655a959b5a7e9d18aedde2f77ea3f2b6ecd67609fbb16f9abe9eb349560a99` | 完整清单 355 nodes / 376 occurrences / 360 edges，0 个完整性矛盾；DMG `ev_f94e89cc19ea459d3d90d8b88f3db1a2eef1769316594087d613f9c756fff1c1`，summary `ev_060e3e4d2c5c7750c1f452fa92f5881cb6c790c6880d4b077deb4b85773ef085`，inventory `ev_859ce6215860fa62f53daf1b9ada22f7ac508fdbdb45b71c4d2cc6f5656da38b`，`Info.plist` `ev_35e010b6ad2afbbcf5589f80c9faf05a49fabf807b3a6806cf1ea2111569f531`。 |
+| Boring Notch | `2.8-rc.2` / `theboringteam.boringnotch`（build `297`）；DMG `ea891b26642dcb766340716feb80df601f5fde7a154c5907d5f93a3695df110d` | 完整清单 245 nodes / 264 occurrences / 250 edges，0 个完整性矛盾；DMG `ev_71fcaf28b79cc3330eba269a7973dc6f0c199fa8e66593629292ea2762b46d01`，summary `ev_df2fc646806b8cdcf3b1642db42d64a1d5280271ef6923bb4173702fc3a0010a`，inventory `ev_44e2dc5629ea5e07fff708a731a5bdf1a5691a81496d1422dce0ebd2f6c5c612`，`Info.plist` `ev_729d1822644808eb38c79140d8fcbcd31e0d736e8450d84f7b4edd00d2d56e86`。 |
+
+以上 REA 结果用于确认被审包的版本、身份和清单完整性，不等于其行为或动画经过静态还原；本轮没有检查二进制函数或声称复现竞品状态机。版本来源：[Vibe Island 官方更新页](https://vibeisland.app/changelog/)、[Boring Notch `v2.8-rc.2` Release](https://github.com/TheBoredTeam/boring.notch/releases/tag/v2.8-rc.2)。
+
+### 减少动态效果时固定像素状态指示（2026-10-26）
+
+这是 Agent Notch 自身 UI 的可访问性一致性修正，不来自竞品内部行为：`ProcessingSpinner` 已响应 macOS“减少动态效果”，但刘海和引导页使用的 `PixelLoaderIcon`、`WaitingPixelIndicatorIcon`、`VibePetIcon`、`PetStateSignalIcon`、`CompactPetCompanionIcon` 仍持续运行 `TimelineView`。
+
+现在这些逐帧/呼吸/轨道指示均读取系统减少动态效果状态。启用后不创建周期时间线，工作和等待仍以原来的颜色与形状显示为固定代表帧/固定亮度；空闲宠物保留其原本随机静止帧。关闭减少动态效果后继续使用原有帧率、动画节奏和缓存资源。新增 `testReducedMotionPixelPolicyKeepsDeterministicStateFrames` 锁定代表帧选择、索引边界及固定亮度策略。
+
+验证：定向 XCTest `1 passed / 0 failed`；完整 macOS XCTest `490 passed / 0 failed / 0 skipped`。没有进行人工桌面 GUI 动效验收，因此这里只确认源码构建和测试行为；竞品仍为静态分析、未启动。
