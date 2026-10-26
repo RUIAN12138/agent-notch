@@ -426,3 +426,5 @@ Boring Notch 包身份为 `2.8-rc.2` / `theboringteam.boringnotch`（build `297`
 Agent Notch 原先没有 reopen delegate；单实例检测只激活既有进程，而不明确展示设置。现新增重开策略：引导未完成时回到引导，已完成时打开详细设置，避免空白激活；该实现复用 Agent Notch 自己的窗口入口，不复制 Boring Notch 源码。`AppReopenPolicyTests` 定向测试 2 passed / 0 failed；完整 macOS XCTest 为 493 passed / 0 failed / 0 skipped（macOS 27.2 / arm64），另有 `ProcessExecutorTests.swift` 的 QoS 优先级反转运行时警告。
 
 竞品均未启动。完整 XCTest 只证明本地策略与构建正确；尚未在已安装应用、Finder/Dock 重开路径或真实桌面上做端到端验收。
+
+后续对同一 `2.8-rc.2` 主程序进行 REA 原生派发元数据只读检查，直接观察到 `_TtC11boringNotch11AppDelegate` 实例方法 selector `applicationShouldHandleReopen:hasVisibleWindows:`。Evidence `ev_a1febe414cbf78d05ad553e14a3e8f7e5e96152d116e7eaa2edce42ae099cce7` 绑定到上述 arm64 可执行文件 SHA-256 `524091c698dff91dd82c7382d55dbf507a9b874cb61066cd1f766f4c04244cf9`。这项发行二进制元数据证据确认 selector 存在；它不揭示方法体或返回值。`applicationShouldHandleReopen` 中展示设置窗口并返回 `false` 的具体行为仍来自官方 `v2.8-rc.2` 源码，不宣称已由二进制还原。REA 元数据读取覆盖为 partial，且 Ghidra/Hopper/IDA 深度分析提供器在本机不可用；不据此声称完整反编译或运行时验收。

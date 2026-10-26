@@ -39,6 +39,13 @@ enum NotchMotionPolicy {
     static let speedMultiplierRange = 0.5...2.0
     static let defaultSpeedMultiplier = 1.0
 
+    static func shouldTriggerAttentionBounce(
+        reduceMotion: Bool,
+        animationsEnabled: Bool
+    ) -> Bool {
+        animationsEnabled && !reduceMotion
+    }
+
     static func sanitizedSpeedMultiplier(_ speedMultiplier: Double) -> Double {
         guard speedMultiplier.isFinite else {
             return defaultSpeedMultiplier
@@ -60,6 +67,15 @@ enum NotchMotionPolicy {
     static let closing = NotchTransitionMotionProfile(
         response: 0.30,
         dampingFraction: 0.9,
+        reducedMotionDuration: 0.10
+    )
+
+    /// Completion attention stays noticeable without the strong overshoot of
+    /// the old hard-coded spring, and follows the same speed/accessibility
+    /// preferences as the notch shell.
+    static let attentionBounce = NotchTransitionMotionProfile(
+        response: 0.32,
+        dampingFraction: 0.82,
         reducedMotionDuration: 0.10
     )
 }

@@ -368,9 +368,12 @@ struct NotchView: View {
                         value: layoutAnimationState
                     )
                     .animation(
-                        reduceMotion
-                            ? nil
-                            : .spring(response: 0.3, dampingFraction: 0.5),
+                        NotchMotionPolicy.attentionBounce.animation(
+                            reduceMotion: reduceMotion,
+                            enabled: preferences.notchAnimationsEnabled,
+                            speedMultiplier:
+                                preferences.notchAnimationSpeedMultiplier
+                        ),
                         value: isBouncing
                     )
                     .contentShape(Rectangle())
@@ -425,6 +428,16 @@ struct NotchView: View {
             viewModel.updateVisibleSessionCount(sessionMonitor.instances.count)
             updateIdleVisibility()
             reconcileFollowUpReminders(sessionMonitor.instances)
+        }
+        .onChange(of: preferences.notchAnimationsEnabled) { _, enabled in
+            if !enabled {
+                cancelAttentionBounce()
+            }
+        }
+        .onChange(of: reduceMotion) { _, isReduced in
+            if isReduced {
+                cancelAttentionBounce()
+            }
         }
         .onChange(of: viewModel.status) { oldStatus, newStatus in
             handleStatusChange(from: oldStatus, to: newStatus)
@@ -1628,7 +1641,10 @@ struct NotchView: View {
     private func triggerAttentionBounce() {
         delayedUIWork.bounceTask?.cancel()
         delayedUIWork.bounceTask = nil
-        guard !reduceMotion else {
+        guard NotchMotionPolicy.shouldTriggerAttentionBounce(
+            reduceMotion: reduceMotion,
+            animationsEnabled: preferences.notchAnimationsEnabled
+        ) else {
             isBouncing = false
             return
         }
@@ -1640,6 +1656,12 @@ struct NotchView: View {
             isBouncing = false
             delayedUIWork.bounceTask = nil
         }
+    }
+
+    private func cancelAttentionBounce() {
+        delayedUIWork.bounceTask?.cancel()
+        delayedUIWork.bounceTask = nil
+        isBouncing = false
     }
 
     private var quietHoursSchedule: NotchQuietHoursSchedule {

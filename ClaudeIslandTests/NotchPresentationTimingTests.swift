@@ -67,6 +67,40 @@ final class NotchPresentationTimingTests: XCTestCase {
         )
     }
 
+    func testAttentionBounceRespectsMotionPreferences() {
+        XCTAssertTrue(
+            NotchMotionPolicy.shouldTriggerAttentionBounce(
+                reduceMotion: false,
+                animationsEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            NotchMotionPolicy.shouldTriggerAttentionBounce(
+                reduceMotion: true,
+                animationsEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            NotchMotionPolicy.shouldTriggerAttentionBounce(
+                reduceMotion: false,
+                animationsEnabled: false
+            )
+        )
+
+        let profile = NotchMotionPolicy.attentionBounce
+        XCTAssertGreaterThanOrEqual(profile.dampingFraction, 0.8)
+        XCTAssertEqual(
+            profile.response(atSpeedMultiplier: 0.5),
+            profile.response * 2,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            profile.response(atSpeedMultiplier: 2.0),
+            profile.response / 2,
+            accuracy: 0.001
+        )
+    }
+
     func testNotchAnimationPreferencesPersistAndSanitizeSpeed() async throws {
         let suite = "NotchAnimationPreferencesTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
