@@ -414,3 +414,15 @@ Vibe Island `1.0.55` 官方更新说明提到，审批通过后命令失败时�
 现在 `ToolTracker` 为具体工具 ID 保留审批时间边界；Hook/transcript 的完成结果必须带有不早于该边界的时间戳，才能更新已批准工具状态。成功接受较新的结果后清除该工具边界，其他工具和会话状态不受影响。新增 `SessionStoreLifecycleTests.testStaleFailureHookCannotFinishToolAfterApproval`：旧实现下先复现为 `error`、修复后保持 `running`；再验证时间更新的失败 Hook 仍可正确切换为 `error`。
 
 定向回归测试 `1 passed / 0 failed`；完整 macOS XCTest 为 `491 passed / 0 failed / 0 skipped`（macOS 27.2 / arm64）。Xcode 仍记录 `ProcessExecutorTests.swift` 一条 QoS 优先级反转运行时警告。该验证是本地状态模型与自动化测试，不替代真实 Hook 延迟、Agent 端到端审批或安装后 UI 验收；竞品仍未启动。
+
+### 重开运行中的应用时给出明确落点（2026-10-26）
+
+Boring Notch 官方 `v2.8-rc.2` 源码的 `boringNotchApp.swift` 实现 `applicationShouldHandleReopen`，直接呈现设置窗口并返回 `false`，避免重开已运行的菜单栏应用后只激活进程、没有明显的可操作落点：[对应源码](https://github.com/TheBoredTeam/boring.notch/blob/v2.8-rc.2/boringNotch/boringNotchApp.swift)。这是该源码 tag 的直接观察，不证明本机 `2.8-rc.2` 二进制与该源码逐字节对应。
+
+本轮 REA 复核的 Vibe Island 包为 `1.0.55` / `app.vibeisland.macos`，DMG SHA-256 `3a655a959b5a7e9d18aedde2f77ea3f2b6ecd67609f9bb16f9abe9eb349560a99`；包清单完整，355 nodes / 376 occurrences / 360 edges / 0 个完整性矛盾。`Info.plist` Evidence：`ev_92e9918f812f8e10c621f9d3091d5ea3ae990e2d1b67636ff548e5fd2b785a6f`；主程序 arm64 Mach-O SHA-256 `c8a07caf4985644ec53cd69970d3bc7ef25f622695c8ce5639e7b594ac36167c`，Evidence `ev_5572f5dd5142f32407a0e76a2afe90ec4bee8486abc968cf1652e21a57c04422`。
+
+Boring Notch 包身份为 `2.8-rc.2` / `theboringteam.boringnotch`（build `297`），DMG SHA-256 `ea891b26642dcb766340716feb80df601f5fde7a154c5907d5f93a3695df110d`；REA 完整清单 245 nodes / 264 occurrences / 250 edges / 0 个完整性矛盾（summary `ev_8846e5fcabfb6e2708b5672cd483fb4345d38feec0b7793bf5e27112eca2a01c`，inventory `ev_0617f49ced276032970ae137bbfb7bfd4ae276ffc7133bcb8dcee4d553abfb2a`）。`Info.plist` Evidence `ev_d2ec8ff65df884181daa5bc87dba646a5cfea6b95cdec40d183a246599e42412`；主程序 arm64 Mach-O SHA-256 `524091c698dff91dd82c7382d55dbf507a9b874cb61066cd1f766f4c04244cf9`，Evidence `ev_b726a31f3bcd1fc88e00ec71a05030e5dde76381edc98a47b0f6c4cfdb483872`。REA 元数据只确认包身份、架构和静态结构，不证明重开行为。
+
+Agent Notch 原先没有 reopen delegate；单实例检测只激活既有进程，而不明确展示设置。现新增重开策略：引导未完成时回到引导，已完成时打开详细设置，避免空白激活；该实现复用 Agent Notch 自己的窗口入口，不复制 Boring Notch 源码。`AppReopenPolicyTests` 定向测试 2 passed / 0 failed；完整 macOS XCTest 为 493 passed / 0 failed / 0 skipped（macOS 27.2 / arm64），另有 `ProcessExecutorTests.swift` 的 QoS 优先级反转运行时警告。
+
+竞品均未启动。完整 XCTest 只证明本地策略与构建正确；尚未在已安装应用、Finder/Dock 重开路径或真实桌面上做端到端验收。

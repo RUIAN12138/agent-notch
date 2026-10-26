@@ -4,6 +4,17 @@ import QuartzCore
 import Sparkle
 import SwiftUI
 
+enum AppReopenDestination: Equatable {
+    case onboarding
+    case settings
+}
+
+enum AppReopenPolicy {
+    static func destination(onboardingCompleted: Bool) -> AppReopenDestination {
+        onboardingCompleted ? .settings : .onboarding
+    }
+}
+
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     private static let onboardingCompletedKey =
@@ -110,6 +121,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
             self?.showOnboardingIfNeeded()
         }
+    }
+
+    /// Give an already-running accessory app a useful destination when the
+    /// user reopens it, instead of merely activating the hidden notch process.
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows _: Bool
+    ) -> Bool {
+        switch AppReopenPolicy.destination(
+            onboardingCompleted: UserDefaults.standard.bool(
+                forKey: Self.onboardingCompletedKey
+            )
+        ) {
+        case .onboarding:
+            showOnboarding()
+        case .settings:
+            showDetailedSettings()
+        }
+        return false
     }
 
     private func handleScreenChange() {
