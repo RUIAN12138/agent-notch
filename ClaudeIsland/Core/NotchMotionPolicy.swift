@@ -70,6 +70,15 @@ enum NotchMotionPolicy {
         reducedMotionDuration: 0.10
     )
 
+    /// Small changes inside the already-open notch should feel more immediate
+    /// than expanding the shell, while still following the user's motion and
+    /// accessibility preferences.
+    static let contentChange = NotchTransitionMotionProfile(
+        response: 0.24,
+        dampingFraction: 0.9,
+        reducedMotionDuration: 0.10
+    )
+
     /// Completion attention stays noticeable without the strong overshoot of
     /// the old hard-coded spring, and follows the same speed/accessibility
     /// preferences as the notch shell.

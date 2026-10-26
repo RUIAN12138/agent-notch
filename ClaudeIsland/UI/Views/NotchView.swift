@@ -303,6 +303,14 @@ struct NotchView: View {
         )
     }
 
+    private var contentChangeAnimation: Animation {
+        NotchMotionPolicy.contentChange.animation(
+            reduceMotion: reduceMotion,
+            enabled: preferences.notchAnimationsEnabled,
+            speedMultiplier: preferences.notchAnimationSpeedMultiplier
+        )
+    }
+
     private var contentTransition: AnyTransition {
         guard !reduceMotion else { return .opacity }
         return .asymmetric(
@@ -854,7 +862,7 @@ struct NotchView: View {
 
                 // Menu toggle
                 Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    withAnimation(contentChangeAnimation) {
                         viewModel.toggleMenu()
                         if viewModel.contentType == .menu {
                             updateManager.markUpdateSeen()

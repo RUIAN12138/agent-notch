@@ -51,6 +51,24 @@ final class NotchPresentationTimingTests: XCTestCase {
             accuracy: 0.001
         )
         XCTAssertEqual(
+            NotchMotionPolicy.contentChange.response,
+            0.24,
+            accuracy: 0.001
+        )
+        XCTAssertLessThan(
+            NotchMotionPolicy.contentChange.response,
+            NotchMotionPolicy.closing.response
+        )
+        XCTAssertGreaterThanOrEqual(
+            NotchMotionPolicy.contentChange.dampingFraction,
+            0.8
+        )
+        XCTAssertEqual(
+            NotchMotionPolicy.contentChange.reducedMotionDuration,
+            0.10,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
             NotchMotionPolicy.opening.response(atSpeedMultiplier: 0.5),
             0.76,
             accuracy: 0.001
@@ -63,6 +81,11 @@ final class NotchPresentationTimingTests: XCTestCase {
         XCTAssertEqual(
             NotchMotionPolicy.opening.response(atSpeedMultiplier: .infinity),
             NotchMotionPolicy.opening.response,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchMotionPolicy.contentChange.response(atSpeedMultiplier: 2.0),
+            0.12,
             accuracy: 0.001
         )
     }
