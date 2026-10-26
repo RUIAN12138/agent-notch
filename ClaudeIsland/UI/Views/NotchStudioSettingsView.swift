@@ -691,6 +691,39 @@ struct NotchStudioSettingsView: View {
 
                 Divider()
                 settingToggle(
+                    t("Notch open and close animation", "刘海开合动画"),
+                    detail: t(
+                        "Turn off for instant changes. macOS Reduce Motion still replaces the spring with a simpler transition.",
+                        "关闭后开合将即时切换；macOS「减少动态效果」开启时，系统简化过渡仍优先生效。"
+                    ),
+                    isOn: $preferences.notchAnimationsEnabled
+                )
+                .accessibilityIdentifier(
+                    "settings.general.notchAnimationsEnabled"
+                )
+
+                if preferences.notchAnimationsEnabled {
+                    Divider()
+                    sliderRow(
+                        title: t("Open and close speed", "开合速度"),
+                        value: $preferences.notchAnimationSpeedMultiplier,
+                        range: NotchMotionPolicy.speedMultiplierRange,
+                        step: 0.1,
+                        valueText: reduceMotion
+                            ? t("System", "系统控制")
+                            : String(
+                                format: "%.1f×",
+                                preferences.notchAnimationSpeedMultiplier
+                            )
+                    )
+                    .disabled(reduceMotion)
+                    .accessibilityIdentifier(
+                        "settings.general.notchAnimationSpeed"
+                    )
+                }
+
+                Divider()
+                settingToggle(
                     t("Auto-open questions", "问题自动展开"),
                     detail: t(
                         "Turn this off to keep new questions in the compact notch until you open them.",

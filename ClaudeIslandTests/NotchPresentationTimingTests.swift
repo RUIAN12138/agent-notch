@@ -50,6 +50,65 @@ final class NotchPresentationTimingTests: XCTestCase {
             0.10,
             accuracy: 0.001
         )
+        XCTAssertEqual(
+            NotchMotionPolicy.opening.response(atSpeedMultiplier: 0.5),
+            0.76,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchMotionPolicy.opening.response(atSpeedMultiplier: 2.0),
+            0.19,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            NotchMotionPolicy.opening.response(atSpeedMultiplier: .infinity),
+            NotchMotionPolicy.opening.response,
+            accuracy: 0.001
+        )
+    }
+
+    func testNotchAnimationPreferencesPersistAndSanitizeSpeed() async throws {
+        let suite = "NotchAnimationPreferencesTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let preferences = NotchPreferences(defaults: defaults)
+        XCTAssertTrue(preferences.notchAnimationsEnabled)
+        XCTAssertEqual(
+            preferences.notchAnimationSpeedMultiplier,
+            NotchMotionPolicy.defaultSpeedMultiplier,
+            accuracy: 0.001
+        )
+
+        preferences.notchAnimationsEnabled = false
+        preferences.notchAnimationSpeedMultiplier = 1.7
+
+        let restored = NotchPreferences(defaults: defaults)
+        XCTAssertFalse(restored.notchAnimationsEnabled)
+        XCTAssertEqual(
+            restored.notchAnimationSpeedMultiplier,
+            1.7,
+            accuracy: 0.001
+        )
+
+        restored.notchAnimationSpeedMultiplier = .infinity
+        XCTAssertEqual(
+            restored.notchAnimationSpeedMultiplier,
+            NotchMotionPolicy.defaultSpeedMultiplier,
+            accuracy: 0.001
+        )
+        restored.notchAnimationSpeedMultiplier = 10
+        XCTAssertEqual(
+            restored.notchAnimationSpeedMultiplier,
+            NotchMotionPolicy.speedMultiplierRange.upperBound,
+            accuracy: 0.001
+        )
+        restored.notchAnimationSpeedMultiplier = 0
+        XCTAssertEqual(
+            restored.notchAnimationSpeedMultiplier,
+            NotchMotionPolicy.speedMultiplierRange.lowerBound,
+            accuracy: 0.001
+        )
     }
 
     func testAttentionPresentationUsesConsistentPriorityForConcurrentStates() {

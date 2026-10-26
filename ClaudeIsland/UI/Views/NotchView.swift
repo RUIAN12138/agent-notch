@@ -288,11 +288,19 @@ struct NotchView: View {
 
     // Animation springs
     private var openAnimation: Animation {
-        NotchMotionPolicy.opening.animation(reduceMotion: reduceMotion)
+        NotchMotionPolicy.opening.animation(
+            reduceMotion: reduceMotion,
+            enabled: preferences.notchAnimationsEnabled,
+            speedMultiplier: preferences.notchAnimationSpeedMultiplier
+        )
     }
 
     private var closeAnimation: Animation {
-        NotchMotionPolicy.closing.animation(reduceMotion: reduceMotion)
+        NotchMotionPolicy.closing.animation(
+            reduceMotion: reduceMotion,
+            enabled: preferences.notchAnimationsEnabled,
+            speedMultiplier: preferences.notchAnimationSpeedMultiplier
+        )
     }
 
     private var contentTransition: AnyTransition {
@@ -387,7 +395,10 @@ struct NotchView: View {
                     .onHover { hovering in
                         withAnimation(
                             NotchMotionPolicy.opening.animation(
-                                reduceMotion: reduceMotion
+                                reduceMotion: reduceMotion,
+                                enabled: preferences.notchAnimationsEnabled,
+                                speedMultiplier:
+                                    preferences.notchAnimationSpeedMultiplier
                             )
                         ) {
                             isHovering = hovering

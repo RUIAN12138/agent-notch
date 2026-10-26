@@ -379,3 +379,11 @@ Boring Notch `v2.7.3` 的公开源码 `ContentView.handleHover` 会取消过期�
 Agent Notch 的 Bridge 快照只保留最新事件与状态，不含权限请求正文，也无法恢复应用重启前的审批响应 socket。因此 `waiting_for_approval` 快照恢复后继续保持安全的 `.processing` 生命周期裁决，但不再把它展示成普通 Working：会话行改为提示“上次记录为等待审批，请检查 Agent 自身窗口”，可归档且没有批准/拒绝操作；刘海使用静态琥珀提示，不播放等待或处理中循环动画。真正的实时审批仍最高优先，其他正在处理的会话也高于恢复提示。接受到时间更新的生命周期 Hook 后，该提示失效；本地持久化会保存恢复边界，使应用再次重启时不会短暂退回误导的 Working。
 
 新增 `SessionStoreWatcherRecoveryTests.testOfflineApprovalSnapshotRestoresNonActionableNoticeUntilFreshHook`，覆盖 Bridge 恢复、应用快照再次恢复、无可操作交互以及新 Hook 清除提示；`SessionRowPresentationTests` 覆盖提示文案/归档和新 Hook 边界，`NotchPresentationTimingTests` 覆盖并发状态优先级。完整 macOS XCTest 为 488 passed、0 failed、0 skipped（macOS 27.2 / arm64）；Xcode 记录 `ProcessExecutorTests.swift` 一条 QoS 优先级反转运行时警告。该结果验证本地状态模型和自动化测试，不替代真实 Agent 审批恢复或安装后 GUI 验收；Vibe Island 与 Boring Notch 仍未启动，本次不把该设计归因于竞品。
+
+### 刘海开合动效速度偏好（2026-10-26）
+
+Boring Notch 官方 [Issue #1062](https://github.com/TheBoredTeam/boring.notch/issues/1062) 记录用户希望加快刘海展开动画；合并至 `dev` 的 [PR #1079](https://github.com/TheBoredTeam/boring.notch/pull/1079) 展示了从“秒数滑块”调整为“独立启停 + 倍速滑块”的讨论，最终把动画关闭与速度调节分开，避免用 `0×` 同时表示“瞬间完成”与“没有速度”的歧义。该证据是公开 issue/源码变更记录，不证明本地静态检查过的 `v2.7.3` DMG 包含此功能，也不是启动竞品后的运行观察。
+
+Agent Notch 采用相同的交互原则而非复用上游代码：设置页提供独立的开合动画开关，关闭时使用零时长切换；速度保持 `1×` 默认值以兼容当前手感，范围为 `0.5×–2×`，同时作用于打开、关闭和悬停响应。macOS“减少动态效果”开启时，速度滑块显示系统控制并禁用，系统简化过渡不随倍速变化。偏好经过持久化和非有限/越界值钳制测试。
+
+新增速度策略与偏好测试后，定向 `NotchPresentationTimingTests` 为 `18 passed / 0 failed`；完整 macOS XCTest 为 `489 passed / 0 failed / 0 skipped`（macOS 27.2 / arm64）。Xcode 仍报告 `ProcessExecutorTests.swift` 一条既有 QoS 优先级反转运行时警告。以上验证本地源码、偏好模型与自动化测试；尚未进行设置页 GUI 手动验收或已安装应用体验测试。

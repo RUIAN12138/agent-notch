@@ -225,6 +225,8 @@ final class NotchPreferences: ObservableObject {
         static let showInFullScreen = "notchShowInFullScreen"
         static let expandOnHover = "notchExpandOnHover"
         static let hoverDelay = "notchHoverDelay"
+        static let animationsEnabled = "notchAnimationsEnabled"
+        static let animationSpeedMultiplier = "notchAnimationSpeedMultiplier"
         static let collapseOnMouseLeave = "notchCollapseOnMouseLeave"
         static let collapseDelay = "notchCollapseDelay"
         static let expandQuestionsAutomatically =
@@ -273,6 +275,23 @@ final class NotchPreferences: ObservableObject {
 
     @Published var hoverDelay: Double {
         didSet { defaults.set(hoverDelay, forKey: Keys.hoverDelay) }
+    }
+
+    @Published var notchAnimationsEnabled: Bool {
+        didSet { defaults.set(notchAnimationsEnabled, forKey: Keys.animationsEnabled) }
+    }
+
+    @Published var notchAnimationSpeedMultiplier: Double {
+        didSet {
+            let sanitized = NotchMotionPolicy.sanitizedSpeedMultiplier(
+                notchAnimationSpeedMultiplier
+            )
+            if notchAnimationSpeedMultiplier != sanitized {
+                notchAnimationSpeedMultiplier = sanitized
+                return
+            }
+            defaults.set(sanitized, forKey: Keys.animationSpeedMultiplier)
+        }
     }
 
     @Published var collapseOnMouseLeave: Bool {
@@ -523,6 +542,12 @@ final class NotchPreferences: ObservableObject {
             defaults.object(forKey: Keys.showInFullScreen) as? Bool ?? true
         expandOnHover = defaults.object(forKey: Keys.expandOnHover) as? Bool ?? true
         hoverDelay = defaults.object(forKey: Keys.hoverDelay) as? Double ?? 0.3
+        notchAnimationsEnabled =
+            defaults.object(forKey: Keys.animationsEnabled) as? Bool ?? true
+        notchAnimationSpeedMultiplier = NotchMotionPolicy.sanitizedSpeedMultiplier(
+            defaults.object(forKey: Keys.animationSpeedMultiplier) as? Double
+                ?? NotchMotionPolicy.defaultSpeedMultiplier
+        )
         collapseOnMouseLeave =
             defaults.object(forKey: Keys.collapseOnMouseLeave) as? Bool ?? true
         collapseDelay = defaults.object(forKey: Keys.collapseDelay) as? Double ?? 0.2

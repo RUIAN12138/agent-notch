@@ -9,12 +9,26 @@ struct NotchTransitionMotionProfile: Equatable, Sendable {
     let dampingFraction: Double
     let reducedMotionDuration: Double
 
-    func animation(reduceMotion: Bool) -> Animation {
+    func response(atSpeedMultiplier speedMultiplier: Double) -> Double {
+        response / NotchMotionPolicy.sanitizedSpeedMultiplier(speedMultiplier)
+    }
+
+    func animation(
+        reduceMotion: Bool,
+        enabled: Bool = true,
+        speedMultiplier: Double = NotchMotionPolicy.defaultSpeedMultiplier
+    ) -> Animation {
+        guard enabled else {
+            return .linear(duration: 0)
+        }
+
         if reduceMotion {
+            // Keep the system's reduced-motion transition independent from
+            // the user's spring-speed preference.
             return .easeOut(duration: reducedMotionDuration)
         }
         return .interactiveSpring(
-            response: response,
+            response: response(atSpeedMultiplier: speedMultiplier),
             dampingFraction: dampingFraction,
             blendDuration: 0
         )
@@ -22,6 +36,19 @@ struct NotchTransitionMotionProfile: Equatable, Sendable {
 }
 
 enum NotchMotionPolicy {
+    static let speedMultiplierRange = 0.5...2.0
+    static let defaultSpeedMultiplier = 1.0
+
+    static func sanitizedSpeedMultiplier(_ speedMultiplier: Double) -> Double {
+        guard speedMultiplier.isFinite else {
+            return defaultSpeedMultiplier
+        }
+        return min(
+            max(speedMultiplier, speedMultiplierRange.lowerBound),
+            speedMultiplierRange.upperBound
+        )
+    }
+
     static let opening = NotchTransitionMotionProfile(
         response: 0.38,
         dampingFraction: 0.8,
