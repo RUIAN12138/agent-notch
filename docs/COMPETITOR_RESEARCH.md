@@ -436,3 +436,15 @@ Vibe Island `1.0.55` 的[官方更新记录](https://vibeisland.app/changelog/)�
 对照 Agent Notch 的 Hook 处理发现一个本地协议边界缺口：普通 `Notification`（例如 `auth_success`）即使附带 `waiting_for_input`、`processing` 或 `ended` 状态，也会进入通用状态映射；未知会话可能因此创建幽灵卡片，已知会话则可能被错误推进、标记完成并运行结束清理。现在除明确的 `idle_prompt` 外，所有 `Notification` 都不参与生命周期状态裁决；`ended` 的通用清理分支也明确排除信息通知。新增回归矩阵分别验证未知/已知会话与上述状态组合，并确保 `idle_prompt` 既有等待输入行为仍通过。两项回归在修复前共复现 10 个断言失败，修复后通过。
 
 定向 `SessionStoreLifecycleTests` 为 `47 passed / 0 failed`；完整 macOS XCTest 为 `495 passed / 0 failed / 0 skipped`。测试验证本地事件裁决与卡片状态，不替代真实 Claude Hook 端到端或桌面 GUI 验收；Vibe Island 与 Boring Notch 仍未启动，竞品研究继续保持静态范围。
+
+### 事件类型优先于通用终态字段（2026-10-26）
+
+Vibe Island `1.0.55` 官方更新记录继续列出状态边界修复：被打断的回合不能继续显示 Working，迟到通知不能复活已完成状态，且审批失败/拒绝后要清理对应卡片。[官方更新记录](https://vibeisland.app/changelog/)。这些是发布说明，不是对私有实现的观察；本轮以“具体事件语义不能被陈旧或泛化状态覆盖”为检查方向。
+
+Agent Notch 的 Hook 信号裁决此前先检查通用 `status == "ended"`，再检查 `Stop`、`SessionEnd` 等具体协议事件，造成同一状态字段可颠倒两种不同边界：`Stop(status=ended)` 把仅完成一个回合误判成会话终止；`SessionEnd(status=processing)` 则可能被误判为继续工作。现在 `SessionEnd` / `SessionExpired` 按事件类型移除会话，`Stop` / `StopFailure` 和 `idle_prompt` 按回合完成处理；只有没有更具体语义时才采用通用 `ended` 回退，终态清理也只跟随 `.ended` 信号。
+
+新增 `testStopEventCompletesTurnEvenWhenStatusSaysEnded` 与 `testSessionEndEventsRemoveSessionRegardlessOfStatus`。旧实现两项测试共出现 3 个断言失败，修复后 `SessionStoreLifecycleTests` 为 `49 passed / 0 failed`，完整 macOS XCTest 为 `497 passed / 0 failed / 0 skipped`。这验证本地状态机，不替代实际 Agent Hook 端到端或安装后 GUI 验收。
+
+本轮重新用 REA 静态核对本机历史 DMG `/Users/apple/Downloads/VibeIsland.dmg`：SHA-256 `fa1d1e7ebca6ef56a7956a6014d20473bf059a75868e956fe1606933c80b7799`，包内版本为 `1.0.53`（`app.vibeisland.macos`），不是上节记录的 `1.0.55` 下载件。完整清单为 355 nodes / 376 occurrences / 360 edges / 0 个完整性矛盾（summary `ev_93206c624f5776984fa49fd931e07d4e808693e94a9aa5b840cc542926d8b57a`，inventory `ev_eafce1a574d2232c157d59b2c92365c30de5067b2d5ba126babd3d3be75b43d5`）；`Info.plist` Evidence `ev_11c098818aff69c5af0afc5062868d88d067bd4e10fa5244d5938c0aa089051f`。主程序 arm64 Mach-O SHA-256 `5cc3c0ee15d85e361b1d59d55faccdc9eec42f80d7f3d5a3a81f639e60c05e7e`，REA Mach-O summary `ev_3d05ecd035ee27f6253695a91502452ba5aff87ab1922a9f84afcfae1b23e946`。
+
+对该 `1.0.53` 主程序的原生派发元数据读取 Evidence `ev_d76b6c40a99d9949d1853a2f37bf56bab9d5688d0c508c78b7c2325257d5b3f9` 覆盖为 partial，未得到可用于说明应用类处理逻辑的证据；提高读取记录上限时，REA 元数据读取器因空 Objective-C ivar 名称失败。当前环境也没有可用 Hopper/Ghidra 反编译提供器。因此，REA 证据只用于核对这个历史制品身份、结构和已报告的元数据覆盖，不能证明 Vibe Island 的状态机实现；该实现修复仍基于 Agent Notch 自身源码与 XCTest 复现。竞品应用未启动，DMG 只读挂载后已卸载。

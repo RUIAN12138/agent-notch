@@ -162,15 +162,21 @@ final class SessionStoreLifecycleTests: XCTestCase {
             sessionId: sessionId, event: "Notification", status: "waiting_for_input",
             observedAt: idleAt, notificationType: "idle_prompt", source: "claude"
         )))
+        let idleWithEndedStatusAt = idleAt.addingTimeInterval(0.5)
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId, event: "Notification", status: "ended",
+            observedAt: idleWithEndedStatusAt,
+            notificationType: "idle_prompt", source: "claude"
+        )))
         var storedSession = await store.session(for: sessionId)
         var session = try XCTUnwrap(storedSession)
         XCTAssertEqual(session.phase, .waitingForInput)
         XCTAssertEqual(try XCTUnwrap(session.completedAt).timeIntervalSince1970,
                        completedAt.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertEqual(try XCTUnwrap(session.lastHookEventAt).timeIntervalSince1970,
-                       idleAt.timeIntervalSince1970, accuracy: 0.001)
+                       idleWithEndedStatusAt.timeIntervalSince1970, accuracy: 0.001)
 
-        let resumedAt = idleAt.addingTimeInterval(1)
+        let resumedAt = idleWithEndedStatusAt.addingTimeInterval(1)
         await store.process(.hookReceived(hook(
             sessionId: sessionId, event: "UserPromptSubmit", status: "processing",
             observedAt: resumedAt, source: "claude"
@@ -443,6 +449,74 @@ final class SessionStoreLifecycleTests: XCTestCase {
 
         let removedSession = await store.session(for: sessionId)
         XCTAssertNil(removedSession)
+    }
+
+    func testStopEventCompletesTurnEvenWhenStatusSaysEnded() async throws {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let sessionId = "stop-ended-status-\(UUID().uuidString)"
+        let startedAt = Date().addingTimeInterval(-2)
+        let stoppedAt = startedAt.addingTimeInterval(1)
+
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "UserPromptSubmit",
+            status: "processing",
+            observedAt: startedAt,
+            source: "claude"
+        )))
+        await store.process(.hookReceived(hook(
+            sessionId: sessionId,
+            event: "Stop",
+            status: "ended",
+            observedAt: stoppedAt,
+            source: "claude"
+        )))
+
+        let storedSession = await store.session(for: sessionId)
+        let session = try XCTUnwrap(storedSession)
+        XCTAssertEqual(session.phase, .waitingForInput)
+        XCTAssertEqual(
+            try XCTUnwrap(session.completedAt).timeIntervalSince1970,
+            stoppedAt.timeIntervalSince1970,
+            accuracy: 0.001
+        )
+    }
+
+    func testSessionEndEventsRemoveSessionRegardlessOfStatus() async {
+        let store = SessionStore(
+            persistenceEnabled: false,
+            fileSyncEnabled: false,
+            externalLifecycleEffectsEnabled: false
+        )
+        let startedAt = Date().addingTimeInterval(-5)
+
+        for (index, eventName) in ["SessionEnd", "SessionExpired"].enumerated() {
+            let sessionId = "terminal-event-\(index)-\(UUID().uuidString)"
+            await store.process(.hookReceived(hook(
+                sessionId: sessionId,
+                event: "UserPromptSubmit",
+                status: "processing",
+                observedAt: startedAt,
+                source: "claude"
+            )))
+            await store.process(.hookReceived(hook(
+                sessionId: sessionId,
+                event: eventName,
+                status: "processing",
+                observedAt: startedAt.addingTimeInterval(1),
+                source: "claude"
+            )))
+
+            let session = await store.session(for: sessionId)
+            XCTAssertNil(
+                session,
+                "\(eventName) must remove its session regardless of the generic status field"
+            )
+        }
     }
 
     func testRemovedSessionRejectsLateActivityButAllowsLaterRootStart() async throws {

@@ -427,14 +427,14 @@ actor SessionStore {
         let isInformationalNotification =
             event.event == "Notification" &&
             event.notificationType != "idle_prompt"
+        let isSessionTerminationEvent =
+            event.event == "SessionEnd" ||
+            event.event == "SessionExpired"
         let hookSignal: HookLifecycleSignal?
         if isInformationalNotification {
             hookSignal = nil
-        } else if event.status == "ended" {
-            hookSignal = event.event == "SessionExpired" ||
-                event.event == "SessionEnd"
-                ? .removed
-                : .ended
+        } else if isSessionTerminationEvent {
+            hookSignal = .removed
         } else if event.event == "SessionStart" {
             hookSignal = .ready
         } else if isCompletionSignal || newPhase == .waitingForInput {
@@ -445,6 +445,8 @@ actor SessionStore {
             hookSignal = .compacting
         } else if newPhase?.isActive == true {
             hookSignal = .active
+        } else if event.status == "ended" {
+            hookSignal = .ended
         } else {
             hookSignal = nil
         }
@@ -585,7 +587,7 @@ actor SessionStore {
             )
         }
 
-        if event.status == "ended" && !isInformationalNotification {
+        if hookSignal == .ended {
             guard shouldApplyLifecycle else {
                 sessions[sessionId] = session
                 return
