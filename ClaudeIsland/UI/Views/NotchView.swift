@@ -318,108 +318,131 @@ struct NotchView: View {
     // MARK: - Body
 
     var body: some View {
+        preferencesObservedScene
+            .onChange(of: automaticSoundSuppressionReason) { _, _ in
+                revalidatePlayingAttentionSound()
+            }
+            .onChange(of: quietHoursSchedule) { _, schedule in
+                quietHoursMonitor.configure(schedule)
+            }
+            .onChange(of: quietHoursMonitor.isQuiet) { _, _ in
+                revalidatePlayingAttentionSound()
+            }
+            .onChange(of: followUpReminderCoordinator.pendingTargets) { _, targets in
+                deliverFollowUpReminders(targets)
+            }
+            .onDisappear {
+                viewModel.navigationSessions = { [] }
+                quietHoursMonitor.stop()
+                NotchSoundPlayer.shared.revalidateAutomaticPlayback(in: [], sceneSuppressed: true)
+                cancelDelayedUIWork()
+                followUpReminderCoordinator.cancelAll()
+            }
+    }
+
+    // Keep the long modifier chain in separately type-checked expressions.
+    // This preserves modifier order while allowing the older Swift compiler
+    // used by the macOS CI runner to compile the same view reliably.
+    private var shapedNotch: some View {
+        notchLayout
+            .frame(
+                width: viewModel.status == .opened ? notchSize.width : closedContentWidth,
+                alignment: .top
+            )
+            // Keep the scaled compact pet canvas inside the hardware notch.
+            .frame(
+                height: viewModel.status == .opened ? nil : closedNotchSize.height,
+                alignment: .top
+            )
+            .padding(.horizontal, viewModel.status == .opened ? cornerRadiusInsets.opened.top : 0)
+            .padding([.horizontal, .bottom], viewModel.status == .opened ? 12 : 0)
+            .background(.black)
+            .clipShape(currentNotchShape)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(.black)
+                    .frame(height: 1)
+                    .padding(.horizontal, topCornerRadius)
+            }
+    }
+
+    private var animatedNotch: some View {
+        shapedNotch
+            .shadow(
+                color: (viewModel.status == .opened || isHovering) ? .black.opacity(0.7) : .clear,
+                radius: 6
+            )
+            .frame(
+                maxWidth: viewModel.status == .opened ? notchSize.width : nil,
+                maxHeight: viewModel.status == .opened ? notchSize.height : nil,
+                alignment: .top
+            )
+            .animation(
+                viewModel.status == .opened ? openAnimation : closeAnimation,
+                value: layoutAnimationState
+            )
+            .animation(
+                NotchMotionPolicy.attentionBounce.animation(
+                    reduceMotion: reduceMotion,
+                    enabled: preferences.notchAnimationsEnabled,
+                    speedMultiplier: preferences.notchAnimationSpeedMultiplier
+                ),
+                value: isBouncing
+            )
+    }
+
+    private var interactiveNotch: some View {
+        animatedNotch
+            .contentShape(Rectangle())
+            .overlay {
+                if viewModel.status != .opened {
+                    // Keep the closed artwork and its matched geometry intact
+                    // while providing an accessible, non-intercepting button.
+                    Button(action: viewModel.openFromAccessibility) {
+                        Color.clear.contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(preferences.language.text(
+                        "Expand Agent Notch", "展开 Agent Notch"
+                    ))
+                    .accessibilityHint(preferences.language.text(
+                        "Show tasks and quick settings", "显示任务和快捷设置"
+                    ))
+                    .accessibilityIdentifier("notch.expand")
+                }
+            }
+            .onHover { hovering in
+                withAnimation(
+                    NotchMotionPolicy.opening.animation(
+                        reduceMotion: reduceMotion,
+                        enabled: preferences.notchAnimationsEnabled,
+                        speedMultiplier: preferences.notchAnimationSpeedMultiplier
+                    )
+                ) {
+                    isHovering = hovering
+                }
+            }
+            .onTapGesture {
+                if viewModel.status != .opened {
+                    viewModel.notchOpen(reason: .click)
+                }
+            }
+    }
+
+    private var notchScene: some View {
         ZStack(alignment: .top) {
             // Outer container does NOT receive hits - only the notch content does
             VStack(spacing: 0) {
-                notchLayout
-                    .frame(
-                        width: viewModel.status == .opened
-                            ? notchSize.width
-                            : closedContentWidth,
-                        alignment: .top
-                    )
-                    // The persistent pet keeps a 40pt source canvas for the
-                    // opened matched-geometry transition. That canvas is
-                    // scaled visually in compact mode, but SwiftUI still
-                    // measures its unscaled height. Pin the closed shell to
-                    // the real hardware notch so the source canvas cannot
-                    // make the black pill extend below the camera housing.
-                    .frame(
-                        height: viewModel.status == .opened
-                            ? nil
-                            : closedNotchSize.height,
-                        alignment: .top
-                    )
-                    .padding(
-                        .horizontal,
-                        viewModel.status == .opened
-                            ? cornerRadiusInsets.opened.top
-                            : 0
-                    )
-                    .padding([.horizontal, .bottom], viewModel.status == .opened ? 12 : 0)
-                    .background(.black)
-                    .clipShape(currentNotchShape)
-                    .overlay(alignment: .top) {
-                        Rectangle()
-                            .fill(.black)
-                            .frame(height: 1)
-                            .padding(.horizontal, topCornerRadius)
-                    }
-                    .shadow(
-                        color: (viewModel.status == .opened || isHovering) ? .black.opacity(0.7) : .clear,
-                        radius: 6
-                    )
-                    .frame(
-                        maxWidth: viewModel.status == .opened ? notchSize.width : nil,
-                        maxHeight: viewModel.status == .opened ? notchSize.height : nil,
-                        alignment: .top
-                    )
-                    .animation(
-                        viewModel.status == .opened
-                            ? openAnimation
-                            : closeAnimation,
-                        value: layoutAnimationState
-                    )
-                    .animation(
-                        NotchMotionPolicy.attentionBounce.animation(
-                            reduceMotion: reduceMotion,
-                            enabled: preferences.notchAnimationsEnabled,
-                            speedMultiplier:
-                                preferences.notchAnimationSpeedMultiplier
-                        ),
-                        value: isBouncing
-                    )
-                    .contentShape(Rectangle())
-                    .overlay {
-                        if viewModel.status != .opened {
-                            // Keep the closed artwork and its matched geometry
-                            // intact. A real button adds a named AXPress entry
-                            // without wrapping or intercepting expanded controls.
-                            Button(action: viewModel.openFromAccessibility) {
-                                Color.clear.contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(preferences.language.text(
-                                "Expand Agent Notch", "展开 Agent Notch"
-                            ))
-                            .accessibilityHint(preferences.language.text(
-                                "Show tasks and quick settings", "显示任务和快捷设置"
-                            ))
-                            .accessibilityIdentifier("notch.expand")
-                        }
-                    }
-                    .onHover { hovering in
-                        withAnimation(
-                            NotchMotionPolicy.opening.animation(
-                                reduceMotion: reduceMotion,
-                                enabled: preferences.notchAnimationsEnabled,
-                                speedMultiplier:
-                                    preferences.notchAnimationSpeedMultiplier
-                            )
-                        ) {
-                            isHovering = hovering
-                        }
-                    }
-                    .onTapGesture {
-                        if viewModel.status != .opened {
-                            viewModel.notchOpen(reason: .click)
-                        }
-                    }
+                interactiveNotch
             }
         }
         .opacity(isVisible ? 1 : 0)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .preferredColorScheme(.dark)
+    }
+
+    private var lifecycleObservedScene: some View {
+        notchScene
         .onAppear {
             viewModel.navigationSessions = { [weak sessionMonitor] in
                 sessionMonitor?.instances ?? []
@@ -456,6 +479,10 @@ struct NotchView: View {
         .onChange(of: sessionMonitor.pendingInstances) { _, sessions in
             handlePendingSessionsChange(sessions)
         }
+    }
+
+    private var activityObservedScene: some View {
+        lifecycleObservedScene
         .onChange(of: sessionMonitor.instances) { _, instances in
             revalidatePlayingAttentionSound()
             viewModel.updateVisibleSessionCount(instances.count)
@@ -475,6 +502,10 @@ struct NotchView: View {
             rescheduleSubagentCompletionVisibilityExpiry()
             rescheduleCompletionPanelCollapse()
         }
+    }
+
+    private var preferencesObservedScene: some View {
+        activityObservedScene
         .onChange(of: preferences.followUpRemindersEnabled) { _, _ in
             reconcileFollowUpReminders(sessionMonitor.instances)
         }
@@ -483,26 +514,6 @@ struct NotchView: View {
         }
         .onChange(of: silenceRuleStore.rules) { _, _ in
             handleSilenceRulesChange()
-        }
-        .onChange(of: automaticSoundSuppressionReason) { _, _ in
-            revalidatePlayingAttentionSound()
-        }
-        .onChange(of: quietHoursSchedule) { _, schedule in
-            quietHoursMonitor.configure(schedule)
-        }
-        .onChange(of: quietHoursMonitor.isQuiet) { _, _ in
-            revalidatePlayingAttentionSound()
-        }
-        .onChange(of: followUpReminderCoordinator.pendingTargets) {
-            _, targets in
-            deliverFollowUpReminders(targets)
-        }
-        .onDisappear {
-            viewModel.navigationSessions = { [] }
-            quietHoursMonitor.stop()
-            NotchSoundPlayer.shared.revalidateAutomaticPlayback(in: [], sceneSuppressed: true)
-            cancelDelayedUIWork()
-            followUpReminderCoordinator.cancelAll()
         }
     }
 
