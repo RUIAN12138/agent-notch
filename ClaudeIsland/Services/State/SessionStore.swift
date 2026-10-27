@@ -3040,7 +3040,23 @@ actor SessionStore {
         }
 
         let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        // Foundation's built-in ISO-8601 decoder accepts fractional seconds
+        // on some macOS versions but not others. Snapshots with either form
+        // must restore consistently, including when older writers supplied
+        // subsecond timestamps.
+        decoder.dateDecodingStrategy = .custom { dateDecoder in
+            let container = try dateDecoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatter.date(from: value) { return date }
+            formatter.formatOptions = [.withInternetDateTime]
+            if let date = formatter.date(from: value) { return date }
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Invalid ISO 8601 date in session snapshot"
+            )
+        }
 
         guard let decodedPersisted = try? decoder.decode(
             [PersistedSession].self,

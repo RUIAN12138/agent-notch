@@ -514,4 +514,52 @@ final class SessionStoreColdStartTests: XCTestCase {
         XCTAssertLessThanOrEqual(try XCTUnwrap(restored?.lastActivity), restoredAt)
         XCTAssertGreaterThanOrEqual(completedAt, now.addingTimeInterval(-1))
     }
+
+    func testColdStartReadsMixedWholeAndFractionalISO8601Dates() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agent-notch-mixed-dates-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date()
+        let completedAt = now.addingTimeInterval(-2)
+        let whole = ISO8601DateFormatter()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let sessionId = "mixed-dates-\(UUID().uuidString)"
+        let persisted: [[String: Any]] = [[
+            "sessionId": sessionId,
+            "cwd": root.path,
+            "projectName": "mixed-dates",
+            "source": "claude",
+            "phase": "waiting_for_input",
+            "lastActivity": fractional.string(from: completedAt),
+            "createdAt": whole.string(from: now.addingTimeInterval(-60)),
+            "completedAt": fractional.string(from: completedAt)
+        ]]
+        let persistenceURL = root.appendingPathComponent("active-sessions.json")
+        try JSONSerialization.data(withJSONObject: persisted).write(to: persistenceURL)
+        let store = SessionStore(
+            persistenceEnabled: true,
+            fileSyncEnabled: false,
+            conversationParser: ConversationParser(
+                codexSessionsRoot: root.appendingPathComponent("codex", isDirectory: true)
+            ),
+            statusCheckIntervalSeconds: 30,
+            persistenceURL: persistenceURL,
+            bridgeSnapshotDirectory: root.appendingPathComponent("bridge", isDirectory: true)
+        )
+        await store.startPeriodicStatusCheck()
+        defer { Task { await store.stopPeriodicStatusCheck() } }
+        let deadline = Date().addingTimeInterval(3)
+        var restored: SessionState?
+        while Date() < deadline {
+            restored = await store.session(for: sessionId)
+            if restored != nil { break }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(restored?.phase, .waitingForInput)
+        XCTAssertEqual(try XCTUnwrap(restored?.completedAt).timeIntervalSince1970,
+                       completedAt.timeIntervalSince1970, accuracy: 0.002)
+    }
 }
