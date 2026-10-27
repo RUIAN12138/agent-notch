@@ -46,9 +46,7 @@ private final class NotchDelayedUIWork: ObservableObject {
     var visibilityTask: Task<Void, Never>?
     var bounceTask: Task<Void, Never>?
     var completionSoundTask: Task<Void, Never>?
-    var completionPanelCollapseTask: Task<Void, Never>?
-    var completionPanelCollapseStartedAt: Date?
-    var completionPanelCollapseGeneration: UInt64 = 0
+    let completionPanelCollapse = NotchCompletionPanelCollapseCoordinator()
     var subagentCompletionVisibilityTask: Task<Void, Never>?
     var subagentCompletionVisibilityGeneration: UInt64 = 0
     var followUpDeliveryTask: Task<Void, Never>?
@@ -61,10 +59,7 @@ private final class NotchDelayedUIWork: ObservableObject {
         bounceTask = nil
         completionSoundTask?.cancel()
         completionSoundTask = nil
-        completionPanelCollapseTask?.cancel()
-        completionPanelCollapseTask = nil
-        completionPanelCollapseStartedAt = nil
-        completionPanelCollapseGeneration &+= 1
+        completionPanelCollapse.cancel()
         subagentCompletionVisibilityTask?.cancel()
         subagentCompletionVisibilityTask = nil
         subagentCompletionVisibilityGeneration &+= 1
@@ -451,6 +446,11 @@ struct NotchView: View {
             handleStatusChange(from: oldStatus, to: newStatus)
             if oldStatus == .popping && newStatus != .popping {
                 handleAgentTeamCompletionChange(sessionMonitor.instances)
+            }
+        }
+        .onChange(of: viewModel.isHovering) { _, hovering in
+            if !hovering {
+                resumeCompletionPanelCollapseIfNeeded()
             }
         }
         .onChange(of: sessionMonitor.pendingInstances) { _, sessions in
@@ -1049,6 +1049,7 @@ struct NotchView: View {
                 completionVisibilityStartedAt.removeAll()
             }
         case .closed:
+            cancelCompletionPanelCollapse()
             // Don't hide on non-notched devices - users need a visible target
             guard viewModel.hasPhysicalNotch,
                   preferences.idleBehavior == .smartHide else {
@@ -1208,8 +1209,17 @@ struct NotchView: View {
                 hasPendingAutoExpandedInteraction:
                     hasPendingAutoExpandedInteraction
             ) {
-                viewModel.notchClose()
-                cancelCompletionPanelCollapse()
+                if viewModel.refreshPointerHover() {
+                    // The completion preference is off, so there is no new
+                    // dwell. Still let a person finish reading a panel they
+                    // are already hovering over before closing it.
+                    scheduleCompletionPanelCollapse(
+                        startedAt: Date().addingTimeInterval(-preferences.completionCompactDuration)
+                    )
+                } else {
+                    viewModel.notchClose()
+                    cancelCompletionPanelCollapse()
+                }
             }
 
             // Get the sessions that just entered waitingForInput
@@ -1461,89 +1471,49 @@ struct NotchView: View {
     }
 
     private func scheduleCompletionPanelCollapse(startedAt: Date) {
-        delayedUIWork.completionPanelCollapseTask?.cancel()
-        delayedUIWork.completionPanelCollapseGeneration &+= 1
-        let generation = delayedUIWork.completionPanelCollapseGeneration
-        delayedUIWork.completionPanelCollapseStartedAt = startedAt
-        let remaining = NotchAttentionPolicy.completionDwellRemaining(
+        let model = viewModel
+        let monitor = sessionMonitor
+        let settings = preferences
+        let openingGeneration = model.panelOpeningGeneration
+        delayedUIWork.completionPanelCollapse.schedule(
             startedAt: startedAt,
-            duration: preferences.completionCompactDuration
-        )
-        delayedUIWork.completionPanelCollapseTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(remaining))
-            guard !Task.isCancelled,
-                  delayedUIWork.completionPanelCollapseGeneration == generation
-            else {
-                return
-            }
-
-            delayedUIWork.completionPanelCollapseTask = nil
-            let hasPendingAutoExpandedInteraction =
-                NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
-                    in: sessionMonitor.instances,
-                    expandQuestionsAutomatically:
-                        preferences.expandQuestionsAutomatically
+            duration: settings.completionCompactDuration,
+            decision: { [weak model, weak monitor, weak settings] in
+                guard let model, let monitor, let settings,
+                      model.panelOpeningGeneration == openingGeneration else {
+                    return .discard
+                }
+                let isPointerOverPanel = model.refreshPointerHover()
+                let hasPendingAutoExpandedInteraction =
+                    NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
+                        in: monitor.instances,
+                        expandQuestionsAutomatically:
+                            settings.expandQuestionsAutomatically
+                    )
+                return NotchAttentionPolicy.completionPanelCollapseDecision(
+                    status: model.status,
+                    openReason: model.openReason,
+                    hasPendingAutoExpandedInteraction:
+                        hasPendingAutoExpandedInteraction,
+                    isPointerOverPanel: isPointerOverPanel
                 )
-            let decision = NotchAttentionPolicy.completionPanelCollapseDecision(
-                status: viewModel.status,
-                openReason: viewModel.openReason,
-                hasPendingAutoExpandedInteraction:
-                    hasPendingAutoExpandedInteraction
-            )
-            switch decision {
-            case .collapse:
-                delayedUIWork.completionPanelCollapseStartedAt = nil
-                viewModel.notchClose()
-            case .deferUntilInteractionResolves:
-                // Preserve the expired deadline. Once the actionable
-                // interaction ends, the panel can collapse immediately rather
-                // than losing this notification's cleanup intent.
-                break
-            case .discard:
-                delayedUIWork.completionPanelCollapseStartedAt = nil
-            }
-        }
+            },
+            onCollapse: { [weak model] in model?.notchClose() }
+        )
     }
 
     private func rescheduleCompletionPanelCollapse() {
-        guard let startedAt = delayedUIWork.completionPanelCollapseStartedAt else {
-            return
-        }
-        scheduleCompletionPanelCollapse(startedAt: startedAt)
+        delayedUIWork.completionPanelCollapse.reschedule(
+            duration: preferences.completionCompactDuration
+        )
     }
 
     private func resumeCompletionPanelCollapseIfNeeded() {
-        guard delayedUIWork.completionPanelCollapseTask == nil,
-              let startedAt = delayedUIWork.completionPanelCollapseStartedAt else {
-            return
-        }
-
-        let hasPendingAutoExpandedInteraction =
-            NotchAttentionPolicy.hasPendingAutoExpandedInteraction(
-                in: sessionMonitor.instances,
-                expandQuestionsAutomatically:
-                    preferences.expandQuestionsAutomatically
-            )
-        switch NotchAttentionPolicy.completionPanelCollapseDecision(
-            status: viewModel.status,
-            openReason: viewModel.openReason,
-            hasPendingAutoExpandedInteraction:
-                hasPendingAutoExpandedInteraction
-        ) {
-        case .collapse:
-            scheduleCompletionPanelCollapse(startedAt: startedAt)
-        case .deferUntilInteractionResolves:
-            break
-        case .discard:
-            cancelCompletionPanelCollapse()
-        }
+        delayedUIWork.completionPanelCollapse.resumeIfNeeded()
     }
 
     private func cancelCompletionPanelCollapse() {
-        delayedUIWork.completionPanelCollapseTask?.cancel()
-        delayedUIWork.completionPanelCollapseTask = nil
-        delayedUIWork.completionPanelCollapseStartedAt = nil
-        delayedUIWork.completionPanelCollapseGeneration &+= 1
+        delayedUIWork.completionPanelCollapse.cancel()
     }
 
     private func rescheduleCompletionVisibilityExpiries() {

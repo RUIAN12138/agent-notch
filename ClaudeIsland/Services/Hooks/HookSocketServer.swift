@@ -589,7 +589,7 @@ class HookSocketServer {
         toolUseIdCache[key]?.append(toolUseId)
         cacheLock.unlock()
 
-        logger.debug("Cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
+        logger.debug("Cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .private) id:\(toolUseId.prefix(12), privacy: .public)")
     }
 
     /// Pop and return cached tool_use_id for PermissionRequest (FIFO)
@@ -611,7 +611,7 @@ class HookSocketServer {
             toolUseIdCache[key] = queue
         }
 
-        logger.debug("Retrieved cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .public) id:\(toolUseId.prefix(12), privacy: .public)")
+        logger.debug("Retrieved cached tool_use_id for \(event.sessionId.prefix(8), privacy: .public) tool:\(event.tool ?? "?", privacy: .private) id:\(toolUseId.prefix(12), privacy: .public)")
         return toolUseId
     }
 
@@ -680,14 +680,16 @@ class HookSocketServer {
         let data = allData
 
         guard let event = try? JSONDecoder().decode(HookEvent.self, from: data) else {
-            logger.warning("Failed to parse event: \(String(data: data, encoding: .utf8) ?? "?", privacy: .public)")
+            // Malformed payloads can still contain prompts or tool inputs.
+            // Log only their size, never the raw socket data.
+            logger.warning("Failed to parse hook event (\(data.count, privacy: .public) bytes)")
             close(clientSocket)
             return
         }
 
         recordReceivedEvent()
 
-        logger.debug("Received: \(event.event, privacy: .public) for \(event.sessionId.prefix(8), privacy: .public)")
+        logger.debug("Received: \(event.event, privacy: .private) for \(event.sessionId.prefix(8), privacy: .public)")
 
         if event.event == "PreToolUse" {
             cacheToolUseId(event: event)

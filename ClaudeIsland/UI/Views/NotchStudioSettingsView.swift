@@ -1221,10 +1221,10 @@ struct NotchStudioSettingsView: View {
                     )
                     Spacer()
                     Picker(t("Display", "显示屏"), selection: screenBinding) {
-                        Text(t("Automatic", "自动")).tag("automatic")
-                        Text(t("Active display", "活动显示器")).tag("activeDisplay")
-                        ForEach(screenSelector.availableScreens, id: \.self) { screen in
-                            Text(screen.localizedName).tag(screen.localizedName)
+                        Text(t("Automatic", "自动")).tag(ScreenPickerSelection.automatic)
+                        Text(t("Active display", "活动显示器")).tag(ScreenPickerSelection.activeDisplay)
+                        ForEach(screenPickerOptions) { option in
+                            Text(option.title).tag(option.selection)
                         }
                     }
                     .labelsHidden()
@@ -1304,26 +1304,40 @@ struct NotchStudioSettingsView: View {
         }
     }
 
-    private var screenBinding: Binding<String> {
+    private var screenPickerOptions: [ScreenPickerOption] {
+        ScreenPickerPolicy.options(
+            for: screenSelector.availableScreens.map { ScreenIdentifier(screen: $0) }
+        )
+    }
+
+    private var screenBinding: Binding<ScreenPickerSelection> {
         Binding(
             get: {
                 switch screenSelector.selectionMode {
                 case .automatic:
-                    return "automatic"
+                    return .automatic
                 case .activeDisplay:
-                    return "activeDisplay"
+                    return .activeDisplay
                 case .specificScreen:
-                    return screenSelector.selectedScreen?.localizedName ?? "automatic"
+                    guard let selected = screenSelector.selectedScreen,
+                          let index = screenSelector.availableScreens.firstIndex(where: { $0 === selected }) else {
+                        return .automatic
+                    }
+                    return .screen(index: index, identifier: ScreenIdentifier(screen: selected))
                 }
             },
             set: { value in
-                if value == "automatic" {
+                switch value {
+                case .automatic:
                     screenSelector.selectAutomatic()
-                } else if value == "activeDisplay" {
+                case .activeDisplay:
                     screenSelector.selectActiveDisplay()
-                } else if let screen = screenSelector.availableScreens.first(
-                    where: { $0.localizedName == value }
-                ) {
+                case .screen(let index, let identifier):
+                    guard screenSelector.availableScreens.indices.contains(index) else { return }
+                    let screen = screenSelector.availableScreens[index]
+                    // Ignore a stale picker event if the display list changed
+                    // after the menu was built.
+                    guard ScreenIdentifier(screen: screen) == identifier else { return }
                     screenSelector.selectScreen(screen)
                 }
                 NotificationCenter.default.post(

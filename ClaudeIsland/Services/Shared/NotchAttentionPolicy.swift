@@ -167,22 +167,16 @@ enum NotchAttentionPolicy {
     static func completionPanelCollapseDecision(
         status: NotchStatus,
         openReason: NotchOpenReason,
-        hasPendingAutoExpandedInteraction: Bool
+        hasPendingAutoExpandedInteraction: Bool,
+        isPointerOverPanel: Bool = false
     ) -> NotchCompletionPanelCollapseDecision {
-        if shouldCollapseNotificationPanelAfterCompletion(
-            status: status,
-            openReason: openReason,
-            hasPendingAutoExpandedInteraction:
-                hasPendingAutoExpandedInteraction
-        ) {
-            return .collapse
+        guard status == .opened, openReason == .notification else {
+            return .discard
         }
-        if status == .opened,
-           openReason == .notification,
-           hasPendingAutoExpandedInteraction {
+        if hasPendingAutoExpandedInteraction || isPointerOverPanel {
             return .deferUntilInteractionResolves
         }
-        return .discard
+        return .collapse
     }
 
     static func interactionToken(

@@ -67,6 +67,9 @@ class NotchViewModel: ObservableObject {
     @Published private(set) var visibleSessionCount: Int = 0
     @Published private var compactApprovalSessionId: String?
     private(set) var presentationGeneration = 0
+    /// Identifies one continuous opening, even if its content changes from a
+    /// completion to an approval. A later close/reopen is a different owner.
+    private(set) var panelOpeningGeneration: UInt64 = 0
 
     // MARK: - Dependencies
 
@@ -136,6 +139,7 @@ class NotchViewModel: ObservableObject {
 
     private var cancellables = Set<AnyCancellable>()
     private let events: EventMonitors
+    private let currentPointerLocation: () -> CGPoint
     private var hoverTimer: DispatchWorkItem?
     /// Invalidates a delayed pointer callback even if cancellation races with
     /// dispatch and the pointer has since returned to the same visible state.
@@ -150,8 +154,10 @@ class NotchViewModel: ObservableObject {
     // MARK: - Initialization
 
     init(deviceNotchRect: CGRect, screenRect: CGRect, windowHeight: CGFloat,
-         hasPhysicalNotch: Bool, events: EventMonitors? = nil) {
+         hasPhysicalNotch: Bool, events: EventMonitors? = nil,
+         currentPointerLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation }) {
         self.events = events ?? .shared
+        self.currentPointerLocation = currentPointerLocation
         self.geometry = NotchGeometry(
             deviceNotchRect: deviceNotchRect,
             screenRect: screenRect,
@@ -258,6 +264,21 @@ class NotchViewModel: ObservableObject {
         isHovering = newHovering
 
         schedulePointerTransition()
+    }
+
+    /// A panel may open underneath a stationary pointer, without a mouse-move
+    /// event. Re-sample the real position before a delayed dismissal decides
+    /// whether the user is still reading the panel.
+    @discardableResult
+    func refreshPointerHover() -> Bool {
+        handleMouseMove(currentPointerLocation())
+        return isHovering
+    }
+
+    private func beginPanelOpeningIfNeeded() {
+        if status != .opened {
+            panelOpeningGeneration &+= 1
+        }
     }
 
     /// Schedules the appropriate transition using the *current* preferences.
@@ -414,6 +435,7 @@ class NotchViewModel: ObservableObject {
         guard canPresentOnCurrentSpace() else { return }
         invalidatePointerTransition()
         presentationGeneration += 1
+        beginPanelOpeningIfNeeded()
         openReason = reason
         status = .opened
 
@@ -442,6 +464,7 @@ class NotchViewModel: ObservableObject {
         }
         invalidatePointerTransition()
         presentationGeneration += 1
+        beginPanelOpeningIfNeeded()
         openReason = .notification
         status = .opened
         currentChatSession = nil
@@ -558,6 +581,7 @@ class NotchViewModel: ObservableObject {
         guard canPresentOnCurrentSpace() else { return }
         invalidatePointerTransition()
         presentationGeneration += 1
+        beginPanelOpeningIfNeeded()
         // Do not downgrade a panel already owned by direct user interaction.
         // The actionable conversation may change, but its close policy should
         // not suddenly become automatic while the user is inside it.

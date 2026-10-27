@@ -55,6 +55,53 @@ final class ScreenSelectionTests: XCTestCase {
         )
     }
 
+    func testSavedDisplayIDTakesPriorityOverAnEarlierSameNamedDisplay() {
+        let first = ScreenIdentifier(displayID: 10, localizedName: "External Display")
+        let selected = ScreenIdentifier(displayID: 11, localizedName: "External Display")
+
+        for available in [[first, selected], [selected, first]] {
+            XCTAssertEqual(
+                ScreenSelectionResolver.resolve(
+                    mode: .specificScreen,
+                    savedIdentifier: selected,
+                    availableIdentifiers: available,
+                    builtInIdentifier: builtIn,
+                    mainIdentifier: activeExternal
+                ),
+                selected
+            )
+        }
+    }
+
+    func testAmbiguousNameFallbackUsesBuiltInOrMainDisplay() {
+        let saved = ScreenIdentifier(displayID: 90, localizedName: "External Display")
+        let first = ScreenIdentifier(displayID: 10, localizedName: saved.localizedName)
+        let second = ScreenIdentifier(displayID: 11, localizedName: saved.localizedName)
+
+        for available in [[first, second], [second, first]] {
+            XCTAssertEqual(
+                ScreenSelectionResolver.resolve(
+                    mode: .specificScreen,
+                    savedIdentifier: saved,
+                    availableIdentifiers: available,
+                    builtInIdentifier: builtIn,
+                    mainIdentifier: activeExternal
+                ),
+                builtIn
+            )
+            XCTAssertEqual(
+                ScreenSelectionResolver.resolve(
+                    mode: .specificScreen,
+                    savedIdentifier: ScreenIdentifier(displayID: nil, localizedName: saved.localizedName),
+                    availableIdentifiers: available,
+                    builtInIdentifier: nil,
+                    mainIdentifier: activeExternal
+                ),
+                activeExternal
+            )
+        }
+    }
+
     func testSelectionModeKeepsExistingPersistedRawValues() {
         for (rawValue, expected) in [
             ("automatic", ScreenSelectionMode.automatic),
@@ -63,6 +110,24 @@ final class ScreenSelectionTests: XCTestCase {
         ] {
             XCTAssertEqual(ScreenSelectionMode(rawValue: rawValue), expected)
         }
+    }
+
+    func testPickerOptionsDistinguishSameNamedScreensAndModeNames() {
+        let screens = [
+            ScreenIdentifier(displayID: 10, localizedName: "External Display"),
+            ScreenIdentifier(displayID: 11, localizedName: "External Display"),
+            ScreenIdentifier(displayID: 12, localizedName: "automatic"),
+            ScreenIdentifier(displayID: nil, localizedName: "External Display")
+        ]
+        let options = ScreenPickerPolicy.options(for: screens)
+
+        XCTAssertEqual(options.map(\.title), [
+            "External Display · 1", "External Display · 2", "automatic", "External Display · 3"
+        ])
+        XCTAssertEqual(Set(options.map(\.selection)).count, screens.count)
+        XCTAssertFalse(options.map(\.selection).contains(.automatic))
+        XCTAssertFalse(options.map(\.selection).contains(.activeDisplay))
+        XCTAssertEqual(options[1].selection, .screen(index: 1, identifier: screens[1]))
     }
 
     func testSameNamedDisplaysWithDifferentIDsAreNotTreatedAsSameCurrentDisplay() {

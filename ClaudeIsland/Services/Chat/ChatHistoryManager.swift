@@ -7,6 +7,16 @@
 import Combine
 import Foundation
 
+struct ChatHistoryConfirmation: Sendable {
+    let optimistic: ChatHistoryItem
+    let nativeID: String
+}
+
+struct ChatHistoryReconciliation: Sendable {
+    let history: [ChatHistoryItem]
+    let confirmations: [ChatHistoryConfirmation]
+}
+
 @MainActor
 class ChatHistoryManager: ObservableObject {
     private struct HistoryLoadTask {
@@ -123,25 +133,55 @@ class ChatHistoryManager: ObservableObject {
     /// in the SwiftUI view that happens to render the result.
     func reconcile(
         nativeHistory: [ChatHistoryItem],
-        optimisticHistory: [ChatHistoryItem]
+        optimisticHistory: [ChatHistoryItem],
+        excludingConfirmedNativeIDs: Set<String> = []
     ) -> [ChatHistoryItem] {
+        reconcileDetailed(
+            nativeHistory: nativeHistory,
+            optimisticHistory: optimisticHistory,
+            excludingConfirmedNativeIDs: excludingConfirmedNativeIDs
+        ).history
+    }
+
+    func reconcileDetailed(
+        nativeHistory: [ChatHistoryItem],
+        optimisticHistory: [ChatHistoryItem],
+        excludingConfirmedNativeIDs: Set<String> = []
+    ) -> ChatHistoryReconciliation {
         var merged = nativeHistory
-        let nativeMessages = nativeHistory.compactMap(messageTextAndRole)
+        let nativeMessages = nativeHistory.compactMap { item in
+            messageTextAndRole(item).map { (id: item.id, role: $0.role, text: $0.text, timestamp: $0.timestamp) }
+        }
+        var consumedNative = Set<Int>()
+        var confirmations: [ChatHistoryConfirmation] = []
 
         for item in optimisticHistory where item.id.hasPrefix("cli-") {
-            guard let candidate = messageTextAndRole(item) else { continue }
-            let hasNativeEquivalent = nativeMessages.contains { native in
-                native.role == candidate.role
-                    && native.text == candidate.text
-                    && abs(native.timestamp.timeIntervalSince(
-                        candidate.timestamp
-                    )) < 300
+            if case .interrupted = item.type {
+                merged.append(item)
+                continue
             }
-            if !hasNativeEquivalent {
+            guard let candidate = messageTextAndRole(item) else { continue }
+            let match = nativeMessages.indices.filter { index in
+                let native = nativeMessages[index]
+                let age = native.timestamp.timeIntervalSince(candidate.timestamp)
+                return !consumedNative.contains(index) &&
+                    !excludingConfirmedNativeIDs.contains(native.id) &&
+                    native.role == candidate.role && native.text == candidate.text &&
+                    age >= 0 && age < 300
+            }.min { left, right in
+                nativeMessages[left].timestamp < nativeMessages[right].timestamp
+            }
+            if let match {
+                consumedNative.insert(match)
+                confirmations.append(ChatHistoryConfirmation(optimistic: item, nativeID: nativeMessages[match].id))
+            } else {
                 merged.append(item)
             }
         }
-        return merged.sorted { $0.timestamp < $1.timestamp }
+        return ChatHistoryReconciliation(
+            history: merged.sorted { $0.timestamp < $1.timestamp },
+            confirmations: confirmations
+        )
     }
 
     func clearHistory(for sessionId: String) {

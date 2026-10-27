@@ -181,7 +181,7 @@ struct ChatView: View {
     @ObservedObject private var codexQuestionBridge = CodexAppServerQuestionBridge.shared
     @StateObject private var preferences = NotchPreferences.shared
 
-    @State private var inputText: String = ""
+    @ObservedObject private var chatDraftStore = ChatDraftStore.shared
     @State private var history: [ChatHistoryItem] = []
     @State private var session: SessionState
     @State private var isLoading: Bool = true
@@ -192,13 +192,20 @@ struct ChatView: View {
     @State private var newMessageCount: Int = 0
     @State private var previousHistoryCount: Int = 0
     @State private var isBottomVisible: Bool = true
-    @State private var isSendingMessage: Bool = false
-    @State private var sendTask: Task<Void, Never>?
-    @State private var activeSendGeneration: UUID?
-    @State private var sendErrorMessage: String?
     @State private var terminalFocusErrorMessage: String?
     @State private var terminalFocusTask: Task<Void, Never>?
     @FocusState private var isInputFocused: Bool
+
+    private var inputText: String { chatDraftStore.draft(for: sessionId) }
+    private var isSendingMessage: Bool { chatDraftStore.isSending(sessionId: sessionId) }
+    private var activeSendGeneration: UUID? { chatDraftStore.activeSendID(for: sessionId) }
+    private var sendErrorMessage: String? { chatDraftStore.error(for: sessionId) }
+    private var inputTextBinding: Binding<String> {
+        Binding(
+            get: { chatDraftStore.draft(for: sessionId) },
+            set: { chatDraftStore.setDraft($0, for: sessionId) }
+        )
+    }
 
     init(sessionId: String, initialSession: SessionState, sessionMonitor: ClaudeSessionMonitor, viewModel: NotchViewModel) {
         self.sessionId = sessionId
@@ -208,7 +215,11 @@ struct ChatView: View {
         self._session = State(initialValue: initialSession)
 
         // Initialize from cache if available (prevents loading flicker on view recreation)
-        let cachedHistory = ChatHistoryManager.shared.history(for: sessionId)
+        let cachedHistory = ChatHistoryManager.shared.reconcile(
+            nativeHistory: ChatHistoryManager.shared.history(for: sessionId),
+            optimisticHistory: ChatDraftStore.shared.optimisticHistory(for: sessionId),
+            excludingConfirmedNativeIDs: ChatDraftStore.shared.confirmedNativeIDs(for: sessionId)
+        )
         let alreadyLoaded = !cachedHistory.isEmpty
         self._history = State(initialValue: cachedHistory)
         self._isLoading = State(initialValue: !alreadyLoaded)
@@ -274,7 +285,7 @@ struct ChatView: View {
                             ))
                     } else {
                         approvalBar(permission: permission)
-                            .id(permission.toolUseId)
+                            .id(permission.presentationIdentity(sessionId: sessionId))
                             .transition(.asymmetric(
                                 insertion: .opacity.combined(with: .move(edge: .bottom)),
                                 removal: .opacity
@@ -306,10 +317,24 @@ struct ChatView: View {
                 // flight. Preserve optimistic CLI rows until an equivalent
                 // native row lands instead of making the user's message blink
                 // out of the notch.
-                let mergedHistory = ChatHistoryManager.shared.reconcile(
+                let reconciliation = ChatHistoryManager.shared.reconcileDetailed(
                     nativeHistory: newHistory,
-                    optimisticHistory: history
+                    optimisticHistory: chatDraftStore.optimisticHistory(for: sessionId),
+                    excludingConfirmedNativeIDs: chatDraftStore.confirmedNativeIDs(for: sessionId)
                 )
+                let mergedHistory = reconciliation.history
+                if !reconciliation.confirmations.isEmpty {
+                    DispatchQueue.main.async {
+                        // The native snapshot or the streamed row may have
+                        // changed before this deferred state update runs.
+                        let latest = ChatHistoryManager.shared.reconcileDetailed(
+                            nativeHistory: ChatHistoryManager.shared.history(for: sessionId),
+                            optimisticHistory: chatDraftStore.optimisticHistory(for: sessionId),
+                            excludingConfirmedNativeIDs: chatDraftStore.confirmedNativeIDs(for: sessionId)
+                        )
+                        chatDraftStore.removeConfirmedOptimistic(latest.confirmations, for: sessionId)
+                    }
+                }
                 let countChanged = mergedHistory.count != history.count
                 let lastItemChanged = mergedHistory.last?.id != history.last?.id
                 // Always update - the @Published ensures we only get notified on real changes
@@ -337,6 +362,18 @@ struct ChatView: View {
             } else if hasLoadedOnce {
                 // Session was loaded but is now gone (removed via /clear) - navigate back
                 viewModel.exitChat()
+            }
+        }
+        .onReceive(chatDraftStore.$optimisticHistories) { histories in
+            let merged = ChatHistoryManager.shared.reconcile(
+                nativeHistory: ChatHistoryManager.shared.history(for: sessionId),
+                optimisticHistory: histories[sessionId] ?? [],
+                excludingConfirmedNativeIDs: chatDraftStore.confirmedNativeIDs(for: sessionId)
+            )
+            if merged != history {
+                history = merged
+                if !isAutoscrollPaused { shouldScrollToBottom = true }
+                if isLoading && !merged.isEmpty { isLoading = false }
             }
         }
         // Chat state must follow the unfiltered store. `instances` deliberately
@@ -617,7 +654,11 @@ struct ChatView: View {
         isLoading = true
 
         if ChatHistoryManager.shared.isLoaded(sessionId: sessionId) {
-            history = ChatHistoryManager.shared.history(for: sessionId)
+            history = ChatHistoryManager.shared.reconcile(
+                nativeHistory: ChatHistoryManager.shared.history(for: sessionId),
+                optimisticHistory: chatDraftStore.optimisticHistory(for: sessionId),
+                excludingConfirmedNativeIDs: chatDraftStore.confirmedNativeIDs(for: sessionId)
+            )
             isLoading = false
             return
         }
@@ -626,7 +667,11 @@ struct ChatView: View {
             sessionId: sessionId,
             cwd: session.cwd
         )
-        history = ChatHistoryManager.shared.history(for: sessionId)
+        history = ChatHistoryManager.shared.reconcile(
+            nativeHistory: ChatHistoryManager.shared.history(for: sessionId),
+            optimisticHistory: chatDraftStore.optimisticHistory(for: sessionId),
+            excludingConfirmedNativeIDs: chatDraftStore.confirmedNativeIDs(for: sessionId)
+        )
         historyLoadFailed = !didLoad
         if !didLoad {
             hasLoadedOnce = false
@@ -805,7 +850,7 @@ struct ChatView: View {
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 10) {
-                TextField(inputPlaceholder, text: $inputText)
+                TextField(inputPlaceholder, text: inputTextBinding)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .foregroundColor(canSendMessages ? .white : .white.opacity(0.4))
@@ -832,7 +877,7 @@ struct ChatView: View {
 
                 Button {
                     if isSendingMessage {
-                        sendTask?.cancel()
+                        chatDraftStore.cancelSending(sessionId: sessionId)
                     } else {
                         sendMessage()
                     }
@@ -892,8 +937,8 @@ struct ChatView: View {
 
     private func approvalBar(permission: PermissionContext) -> some View {
         ChatApprovalBar(
-            tool: permission.toolName,
-            toolInput: permission.formattedInput,
+            permission: permission,
+            language: preferences.language,
             onApproveOnce: permission.bindRequestAction { approvePermission(expectedToolUseId: $0, expectedRequestID: $1) },
             onAutoApprove: permission.bindRequestAction { autoApprovePermission(expectedToolUseId: $0, expectedRequestID: $1) },
             onDeny: permission.bindRequestAction { denyPermission(expectedToolUseId: $0, expectedRequestID: $1) }
@@ -1011,29 +1056,27 @@ struct ChatView: View {
     }
 
     private func sendMessage() {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard canSendMessages, !text.isEmpty else { return }
+        guard canSendMessages,
+              let pendingDraft = chatDraftStore.takeForSending(sessionId: sessionId) else { return }
+        let text = pendingDraft.textToSend
 
         // Resume autoscroll when user sends a message
         resumeAutoscroll()
         shouldScrollToBottom = true
-        isSendingMessage = true
-        sendErrorMessage = nil
-        inputText = ""
+        chatDraftStore.setError(nil, for: sessionId)
 
         // Add the exact text sent to the CLI immediately. The response is
         // appended from CLI stdout below; no desktop transcript round-trip is
         // required for this chat path.
         let optimisticUserId = "cli-user-\(UUID().uuidString)"
-        history.append(ChatHistoryItem(
+        chatDraftStore.appendOptimistic(ChatHistoryItem(
             id: optimisticUserId,
             type: .user(text),
             timestamp: Date()
-        ))
+        ), for: sessionId)
 
         let assistantId = "cli-assistant-\(UUID().uuidString)"
-        let generation = UUID()
-        activeSendGeneration = generation
+        let generation = pendingDraft.id
         let stdoutAccumulator = CLIStreamTextAccumulator()
         let (stdoutSignals, stdoutContinuation) = AsyncStream<Void>.makeStream(
             bufferingPolicy: .bufferingNewest(1)
@@ -1052,11 +1095,7 @@ struct ChatView: View {
             }
 
             defer {
-                if activeSendGeneration == generation {
-                    activeSendGeneration = nil
-                    isSendingMessage = false
-                    sendTask = nil
-                }
+                chatDraftStore.finishSending(pendingDraft)
             }
 
             let result = await sendToSession(text, onStdoutChunk: { data in
@@ -1073,20 +1112,20 @@ struct ChatView: View {
             switch result {
             case .failure(let errorMessage):
                 if cleanedCLIOutput(streamedOutput).isEmpty {
-                    history.removeAll { $0.id == optimisticUserId }
-                    inputText = text
+                    chatDraftStore.removeOptimistic(id: optimisticUserId, for: sessionId)
+                    chatDraftStore.restoreAfterFailure(pendingDraft)
                 }
-                sendErrorMessage = errorMessage
+                chatDraftStore.setError(errorMessage, for: sessionId)
             case .cancelled:
-                history.append(ChatHistoryItem(
+                chatDraftStore.appendOptimistic(ChatHistoryItem(
                     id: "cli-interrupted-\(UUID().uuidString)",
                     type: .interrupted,
                     timestamp: Date()
-                ))
-                sendErrorMessage = t(
+                ), for: sessionId)
+                chatDraftStore.setError(t(
                     "Reply stopped. The CLI session remains available.",
                     "已停止本次回复，CLI 会话仍可继续。"
-                )
+                ), for: sessionId)
             case .success(let output):
                 // This is intentionally a CLI-only chat path. Render the
                 // actual CLI response directly instead of depending on a
@@ -1115,7 +1154,7 @@ struct ChatView: View {
                 }
             }
         }
-        sendTask = task
+        chatDraftStore.attach(task, to: pendingDraft)
     }
 
     private func sendToSession(
@@ -1282,21 +1321,7 @@ struct ChatView: View {
 
     @MainActor
     private func upsertCLIAssistant(id: String, text: String) {
-        let timestamp: Date
-        if let index = history.firstIndex(where: { $0.id == id }) {
-            timestamp = history[index].timestamp
-            history[index] = ChatHistoryItem(
-                id: id,
-                type: .assistant(text),
-                timestamp: timestamp
-            )
-        } else {
-            history.append(ChatHistoryItem(
-                id: id,
-                type: .assistant(text),
-                timestamp: Date()
-            ))
-        }
+        chatDraftStore.upsertAssistant(id: id, text: text, for: sessionId)
     }
 
     private func cleanedCLIOutput(_ output: String) -> String {
@@ -1926,16 +1951,36 @@ struct ChatInteractivePromptBar: View {
 /// Approval bar for the chat view with animated buttons
 struct ChatApprovalBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let tool: String
-    let toolInput: String?
+    let permission: PermissionContext
+    let language: AppLanguage
     let onApproveOnce: () -> Void
     let onAutoApprove: () -> Void
     let onDeny: () -> Void
-    @ObservedObject private var preferences = NotchPreferences.shared
 
     @State private var showContent = false
     @State private var showAllowButton = false
     @State private var showDenyButton = false
+    @State private var showDetails = false
+
+    init(
+        permission: PermissionContext,
+        language: AppLanguage,
+        onApproveOnce: @escaping () -> Void,
+        onAutoApprove: @escaping () -> Void,
+        onDeny: @escaping () -> Void,
+        initiallyExpanded: Bool = false,
+        initiallyVisible: Bool = false
+    ) {
+        self.permission = permission
+        self.language = language
+        self.onApproveOnce = onApproveOnce
+        self.onAutoApprove = onAutoApprove
+        self.onDeny = onDeny
+        self._showContent = State(initialValue: initiallyVisible)
+        self._showAllowButton = State(initialValue: initiallyVisible)
+        self._showDenyButton = State(initialValue: initiallyVisible)
+        self._showDetails = State(initialValue: initiallyExpanded)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1951,7 +1996,7 @@ struct ChatApprovalBar: View {
                         .foregroundStyle(.white.opacity(0.88))
 
                     HStack(spacing: 5) {
-                        Text(MCPToolFormatter.formatToolName(tool))
+                        Text(MCPToolFormatter.formatToolName(permission.toolName))
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundColor(TerminalColors.amber)
                         Text(t("wants to perform this action", "请求执行以下操作"))
@@ -1959,7 +2004,7 @@ struct ChatApprovalBar: View {
                             .foregroundColor(.white.opacity(0.46))
                     }
 
-                    if let input = toolInput, !input.isEmpty {
+                    if let input = permission.formattedInput, !input.isEmpty {
                         Text(input)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(.white.opacity(0.64))
@@ -1972,6 +2017,14 @@ struct ChatApprovalBar: View {
                                 RoundedRectangle(cornerRadius: 7)
                                     .fill(Color.white.opacity(0.055))
                             )
+                    }
+
+                    if permission.toolInput?.isEmpty == false {
+                        ApprovalInputDetailsSection(
+                            permission: permission,
+                            isExpanded: $showDetails,
+                            language: language
+                        )
                     }
                 }
                 .opacity(showContent ? 1 : 0)
@@ -2067,7 +2120,58 @@ struct ChatApprovalBar: View {
     }
 
     private func t(_ english: String, _ chinese: String) -> String {
-        preferences.language.text(english, chinese)
+        language.text(english, chinese)
+    }
+}
+
+/// Disclosure remains tied to the rendered request; values are formatted only
+/// when expanded so large tool arguments do not slow the compact card.
+struct ApprovalInputDetailsSection: View {
+    let permission: PermissionContext
+    @Binding var isExpanded: Bool
+    let language: AppLanguage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                Label(
+                    isExpanded ? text("Hide full input", "收起完整输入") : text("Show full input", "查看完整输入"),
+                    systemImage: isExpanded ? "chevron.up" : "chevron.down"
+                )
+                .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white.opacity(0.78))
+            .accessibilityHint(text("Review the original tool arguments before deciding.", "审批前查看工具收到的原始参数。"))
+
+            if isExpanded {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(permission.approvalInputDetails) { field in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(field.key)
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                Text(field.value.isEmpty ? text("(empty string)", "（空字符串）") : field.value)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.82))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .padding(9)
+                }
+                .frame(maxHeight: 150)
+                .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
+            }
+        }
+    }
+
+    private func text(_ english: String, _ chinese: String) -> String {
+        language.text(english, chinese)
     }
 }
 

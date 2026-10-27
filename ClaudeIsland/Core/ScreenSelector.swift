@@ -76,11 +76,53 @@ enum ScreenSelectionResolver {
             return mainIdentifier ?? builtInIdentifier
 
         case .specificScreen:
-            if let savedIdentifier,
-               let match = availableIdentifiers.first(where: savedIdentifier.matches) {
-                return match
+            if let savedIdentifier {
+                // A name is only a fallback after an ID disappears. Matching
+                // both in one pass selects the first of two identical monitors
+                // even when the user's actual display ID is still present.
+                if let displayID = savedIdentifier.displayID,
+                   let exact = availableIdentifiers.first(where: { $0.displayID == displayID }) {
+                    return exact
+                }
+                let nameMatches = availableIdentifiers.filter {
+                    $0.localizedName == savedIdentifier.localizedName
+                }
+                if nameMatches.count == 1 {
+                    return nameMatches[0]
+                }
             }
             return builtInIdentifier ?? mainIdentifier
+        }
+    }
+}
+
+/// Picker identities must not share a namespace with display names. The index
+/// also distinguishes two same-named screens when AppKit supplies no display ID.
+enum ScreenPickerSelection: Hashable {
+    case automatic
+    case activeDisplay
+    case screen(index: Int, identifier: ScreenIdentifier)
+}
+
+struct ScreenPickerOption: Identifiable, Equatable {
+    let selection: ScreenPickerSelection
+    let title: String
+    var id: ScreenPickerSelection { selection }
+}
+
+enum ScreenPickerPolicy {
+    static func options(for identifiers: [ScreenIdentifier]) -> [ScreenPickerOption] {
+        let counts = Dictionary(grouping: identifiers, by: \.localizedName).mapValues(\.count)
+        var occurrences: [String: Int] = [:]
+        return identifiers.enumerated().map { index, identifier in
+            occurrences[identifier.localizedName, default: 0] += 1
+            let title = counts[identifier.localizedName, default: 0] > 1
+                ? "\(identifier.localizedName) · \(occurrences[identifier.localizedName, default: 1])"
+                : identifier.localizedName
+            return ScreenPickerOption(
+                selection: .screen(index: index, identifier: identifier),
+                title: title
+            )
         }
     }
 }
@@ -142,7 +184,10 @@ class ScreenSelector: ObservableObject {
     /// Check if a screen is currently selected
     func isSelected(_ screen: NSScreen) -> Bool {
         guard let selected = selectedScreen else { return false }
-        return screenID(of: screen) == screenID(of: selected)
+        if screen === selected { return true }
+        guard let candidateID = screenID(of: screen),
+              let selectedID = screenID(of: selected) else { return false }
+        return candidateID == selectedID
     }
 
     /// Extra height needed when picker is expanded

@@ -9,6 +9,19 @@
 
 import Foundation
 
+struct ApprovalInputField: Identifiable, Equatable {
+    let key: String
+    let value: String
+    var id: String { key }
+}
+
+struct ApprovalPresentationIdentity: Hashable {
+    let sessionId: String
+    let toolUseId: String
+    let requestID: UUID?
+    let receivedAt: Date
+}
+
 /// Permission context for tools waiting for approval
 struct PermissionContext: Sendable {
     let toolUseId: String
@@ -16,6 +29,39 @@ struct PermissionContext: Sendable {
     let toolInput: [String: AnyCodable]?
     let receivedAt: Date
     var requestID: UUID? = nil
+
+    func presentationIdentity(sessionId: String) -> ApprovalPresentationIdentity {
+        ApprovalPresentationIdentity(
+            sessionId: sessionId, toolUseId: toolUseId,
+            requestID: requestID, receivedAt: receivedAt
+        )
+    }
+
+    /// Source-provided arguments for an explicit detail view. Strings are
+    /// shown unchanged; structured values are rendered as sorted JSON. No
+    /// guessed reason, log message, or persisted copy is produced here.
+    var approvalInputDetails: [ApprovalInputField] {
+        guard let input = toolInput else { return [] }
+        let priority = ["command", "file_path", "path", "url", "query", "pattern"]
+        let keys = input.keys.sorted { left, right in
+            let leftRank = priority.firstIndex(of: left) ?? priority.count
+            let rightRank = priority.firstIndex(of: right) ?? priority.count
+            return leftRank == rightRank ? left < right : leftRank < rightRank
+        }
+        return keys.compactMap { key in
+            guard let value = input[key] else { return nil }
+            if let string = value.value as? String {
+                return ApprovalInputField(key: key, value: string)
+            }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            guard let data = try? encoder.encode(value),
+                  let json = String(data: data, encoding: .utf8) else {
+                return ApprovalInputField(key: key, value: "[Unable to display this value]")
+            }
+            return ApprovalInputField(key: key, value: json)
+        }
+    }
 
     /// Bind a rendered button to this request, not to mutable SwiftUI State.
     /// An outgoing card can remain clickable while its removal animates.
